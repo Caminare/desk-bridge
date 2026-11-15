@@ -9,44 +9,62 @@ test('capLevelFor picks the best level within the preset width', () => {
   assert.equal(QUALITY_LADDER[capLevelFor(100)].maxWidth, 640);
 });
 
-test('steps down on high RTT, respecting the hold time', () => {
+test('a high but steady RTT (long path, no congestion) keeps full quality', () => {
+  const a = new AdaptiveQuality(1152);
+  for (let t = 0; t < 60_000; t += 100) assert.equal(a.onRttSample(600 + (t % 3) * 10, t), null);
+  assert.equal(a.level, a.cap);
+  assert.equal(a.baselineMs, 600);
+});
+
+test('queuing above the baseline steps down, respecting the hold time', () => {
   const a = new AdaptiveQuality(1152, { downHoldMs: 1000 });
+  for (let t = 0; t < 2000; t += 100) a.onRttSample(300, t);
   const start = a.level;
-  assert.ok(a.onRttSample(600, 2000));
+  assert.ok(a.onRttSample(650, 2000), 'queue 350 ms > 250 ms');
   assert.equal(a.level, start + 1);
-  assert.equal(a.onRttSample(600, 2500), null, 'within hold');
-  assert.ok(a.onRttSample(600, 3100));
+  assert.equal(a.onRttSample(650, 2500), null, 'within hold');
+  assert.ok(a.onRttSample(650, 3100));
   assert.equal(a.level, start + 2);
 });
 
-test('very high RTT drops two levels at once and never goes below the lowest', () => {
+test('heavy queuing drops two levels and never below the lowest', () => {
   const a = new AdaptiveQuality(1152);
-  a.onRttSample(5000, 10_000);
+  a.onRttSample(100, 0);
+  a.onRttSample(1000, 5000);
   assert.equal(a.level, capLevelFor(1152) + 2);
-  for (let t = 20_000; t < 40_000; t += 2000) a.onRttSample(5000, t);
+  for (let t = 6000; t < 14_000; t += 1500) a.onRttSample(1000, t);
   assert.equal(a.level, QUALITY_LADDER.length - 1);
 });
 
-test('steps up slowly when calm, never above the cap', () => {
+test('recovers once queuing clears, stepping up slowly and never above the cap', () => {
   const a = new AdaptiveQuality(1152, { upHoldMs: 4000 });
-  a.onRttSample(600, 2000);
-  a.onRttSample(600, 4000);
+  a.onRttSample(200, 0);
+  a.onRttSample(800, 2000);
+  a.onRttSample(800, 4000);
   const low = a.level;
-  assert.equal(a.onRttSample(50, 6000), null, 'not calm long enough');
-  assert.ok(a.onRttSample(50, 8001));
+  assert.ok(low > a.cap);
+  assert.equal(a.onRttSample(220, 6000), null, 'not calm long enough');
+  assert.ok(a.onRttSample(220, 8001));
   assert.equal(a.level, low - 1);
-  for (let t = 20_000; t < 100_000; t += 5000) a.onRttSample(50, t);
+  for (let t = 10_000; t < 60_000; t += 5000) a.onRttSample(220, t);
   assert.equal(a.level, a.cap);
 });
 
-test('medium RTT holds steady', () => {
-  const a = new AdaptiveQuality(1152);
-  for (let t = 0; t < 30_000; t += 1000) assert.equal(a.onRttSample(300, t), null);
+test('baseline follows the path when it gets slower for good', () => {
+  const a = new AdaptiveQuality(1152, { baselineWindowMs: 10_000 });
+  for (let t = 0; t < 10_000; t += 500) a.onRttSample(100, t);
+  // Path moves (e.g. phone switches to mobile data): RTT steady at 400.
+  let t = 10_000;
+  for (; t < 40_000; t += 500) a.onRttSample(400, t);
+  assert.equal(a.baselineMs, 400, 'old minimum aged out');
+  const lvl = a.level;
+  for (; t < 60_000; t += 500) a.onRttSample(400, t);
+  assert.ok(a.level <= lvl, 'no further step-downs at the new steady RTT');
 });
 
-test('setCap jumps to the new preset', () => {
+test('setCap jumps to the new preset; invalid samples are ignored', () => {
   const a = new AdaptiveQuality(1152);
   assert.equal(a.setCap(1600).maxWidth, 1600);
   assert.equal(a.setCap(854).maxWidth, 800);
-  assert.equal(a.onRttSample(-1), null, 'ignores invalid samples');
+  assert.equal(a.onRttSample(-1), null);
 });

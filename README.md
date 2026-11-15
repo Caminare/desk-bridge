@@ -120,12 +120,12 @@ DeskBridge is built for controlling PCs over the internet, so it keeps the strea
 
 - **Only changed screen areas are sent.** The agent compares 64×64 tiles and sends JPEGs of the changed regions; an idle desktop costs almost nothing, typing sends a few small tiles.
 - **Capture and sending run in parallel** with input handling, so the mouse stays responsive even while a frame is uploading.
-- **Adaptive quality.** The relay watches the frame round trip (PC upload → relay → phone → back) and lowers resolution/JPEG quality when it grows, raising it again when the link is calm. The SD/HD/Ultra selector sets the maximum.
+- **Adaptive quality and pacing.** The agent and relay watch the frame round trip (PC upload → relay → phone → back) and compare it with the path's normal latency. Only *extra* delay, meaning frames queuing up, lowers resolution/JPEG quality or shrinks the send window. A distant but uncongested connection keeps full quality and frame rate. The SD/HD/Ultra selector sets the maximum (as a pixel budget, so ultrawide screens get the same detail).
 - **Smooth on phones.** Frames are drawn straight onto a canvas (decoded off the main thread) and acknowledged only after they are on screen.
 
-Tap the **pulse icon** in the Control Deck or fullscreen toolbar to see live stats: FPS, download/upload rate, round trip, capture/encode/decode times, current quality and changed tiles. If the round trip is high and upload is near your PC's upload speed, the PC's connection is the bottleneck. Where the relay runs matters too: every frame goes PC → relay → phone, so a relay on a well-connected server near your users is faster than one at home behind a tunnel.
+Tap the **pulse icon** in the Control Deck or fullscreen toolbar to see live stats: FPS, download/upload rate, round trip and queuing delay, send window, capture/encode/decode times, current quality and changed tiles. A high round trip with low **Queue** is just distance and is handled fine. A growing **Queue** with upload near your PC's upload speed means the connection is the bottleneck. A high **Capture** time means the PC is slow at grabbing the screen. Where the relay runs matters too: every frame goes PC → relay → phone, so a relay on a well-connected server near your users is faster than one at home behind a tunnel.
 
-Agent tuning parameters (`DeskBridge-Host.ps1 -Name value`): `-MaxStreamWidth` / `-JpegQuality` (starting quality), `-FrameIntervalMs` (idle capture interval, default 100), `-MaxInFlight` (unacknowledged frames, default 4; raise for very high-latency links).
+Agent tuning parameters (`DeskBridge-Host.ps1 -Name value`): `-MaxStreamWidth` / `-JpegQuality` (starting quality), `-FrameIntervalMs` (idle capture interval, default 100), `-MaxInFlight` (hard cap on unacknowledged frames, default 32; the real window adapts automatically).
 
 ---
 

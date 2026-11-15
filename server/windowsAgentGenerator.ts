@@ -35,8 +35,9 @@ param(
   [int]$MaxStreamWidth = 1152,
   # -1 = primary monitor; otherwise an index into [System.Windows.Forms.Screen]::AllScreens
   [int]$MonitorIndex = -1,
-  # Frames sent but not yet acknowledged by a controller. Higher = smoother on high-latency links.
-  [int]$MaxInFlight = 4
+  # Hard cap on frames sent but not yet acknowledged. The actual window is sized in bytes and
+  # adapts to queuing delay, so long (high-latency) paths can keep many small frames in flight.
+  [int]$MaxInFlight = 32
 )
 
 $ErrorActionPreference = 'Stop'
@@ -361,7 +362,12 @@ public class DeskBridgeStreamer {
     curMaxWidth = mw;
     capBmp = new Bitmap(b.Width, b.Height, PixelFormat.Format24bppRgb);
     capG = Graphics.FromImage(capBmp);
-    int w = Math.Min(Math.Max(320, mw), b.Width);
+    // mw is a 16:9-equivalent width: keep the same pixel budget on any aspect ratio so an
+    // ultrawide or 4:3 screen gets as much detail as a 16:9 one.
+    double aspect = b.Width / (double)b.Height;
+    double pixelBudget = mw * (mw * 9.0 / 16.0);
+    int w = (int)Math.Round(Math.Sqrt(pixelBudget * aspect));
+    w = Math.Min(Math.Max(320, w), b.Width);
     int h = (int)Math.Round(b.Height * (w / (double)b.Width));
     if (w < b.Width) {
       outBmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
@@ -813,7 +819,14 @@ while ($true) {
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $frameSeq = 0
     $inFlight = @{}          # seq -> send time (ms)
+    $inFlightSize = @{}      # seq -> bytes
+    $inFlightBytes = 0
+    $byteBudget = 262144     # send window in bytes; grows while there is no queuing
+    $lastCutAt = 0
     $rttMs = 0.0             # smoothed send -> ack round trip
+    $baseRttMs = 0.0         # path baseline: min RTT over the recent window
+    $winMinRtt = 0.0
+    $winStart = 0
     $kbps = 0.0              # smoothed upload rate
     $bytesWindow = 0
     $rateWindowStart = 0
@@ -866,6 +879,8 @@ while ($true) {
           } elseif ($msg.event -eq 'host:controller_count') {
             $controllers = [int]$msg.payload.count
             $inFlight.Clear()
+            $inFlightSize.Clear()
+            $inFlightBytes = 0
             $script:streamer.Paused = ($controllers -le 0)
             if ($controllers -gt 0) { $script:streamer.RequestKeyframe() }
           } elseif ($msg.event -eq 'host:keyframe_request') {
@@ -877,10 +892,36 @@ while ($true) {
               # nothing about the end-to-end path, so they are not RTT samples.
               $isRelayAck = $msg.payload.ContainsKey('relay') -and $msg.payload.relay -eq $true
               if ($inFlight.ContainsKey($ackSeq) -and -not $isRelayAck) {
-                $sample = $clock.ElapsedMilliseconds - $inFlight[$ackSeq]
-                $rttMs = if ($rttMs -le 0) { [double]$sample } else { 0.7 * $rttMs + 0.3 * $sample }
+                $ackNow = $clock.ElapsedMilliseconds
+                $sample = [double]($ackNow - $inFlight[$ackSeq])
+                $rttMs = if ($rttMs -le 0) { $sample } else { 0.7 * $rttMs + 0.3 * $sample }
+                # Baseline = lowest RTT of the current/previous 15 s window: the path's latency
+                # without queuing. Rolling windows let it follow a path that got slower for good.
+                if (($ackNow - $winStart) -ge 15000) {
+                  if ($winMinRtt -gt 0) { $baseRttMs = $winMinRtt }
+                  $winMinRtt = 0.0
+                  $winStart = $ackNow
+                }
+                if ($winMinRtt -le 0 -or $sample -lt $winMinRtt) { $winMinRtt = $sample }
+                if ($baseRttMs -le 0 -or $sample -lt $baseRttMs) { $baseRttMs = $sample }
+                # Delay-based window: grow while frames are not queuing anywhere on the path,
+                # shrink (at most once per round trip) when they are.
+                $queueMs = $rttMs - $baseRttMs
+                if ($queueMs -lt 100) {
+                  $byteBudget = [Math]::Min(8388608, $byteBudget + [Math]::Max(16384, $byteBudget * 0.1))
+                } elseif ($queueMs -gt 250 -and ($ackNow - $lastCutAt) -gt $rttMs) {
+                  $byteBudget = [Math]::Max(131072, $byteBudget * 0.7)
+                  $lastCutAt = $ackNow
+                }
               }
-              foreach ($k in @($inFlight.Keys)) { if ($k -le $ackSeq) { $inFlight.Remove($k) } }
+              foreach ($k in @($inFlight.Keys)) {
+                if ($k -le $ackSeq) {
+                  $inFlightBytes -= $inFlightSize[$k]
+                  $inFlight.Remove($k)
+                  $inFlightSize.Remove($k)
+                }
+              }
+              if ($inFlightBytes -lt 0) { $inFlightBytes = 0 }
             }
           } elseif ($msg.event -eq 'client:input') {
             $ev = $msg.payload
@@ -937,12 +978,17 @@ while ($true) {
 
       $nowMs = $clock.ElapsedMilliseconds
       # If acks stop arriving (e.g. a controller vanished mid-frame), do not stall forever.
-      if ($inFlight.Count -ge $MaxInFlight) {
+      if ($inFlight.Count -gt 0) {
         $oldest = ($inFlight.Values | Measure-Object -Minimum).Minimum
-        if (($nowMs - $oldest) -gt 1500) { $inFlight.Clear() }
+        if (($nowMs - $oldest) -gt [Math]::Max(1500, 3 * $rttMs)) {
+          $inFlight.Clear()
+          $inFlightSize.Clear()
+          $inFlightBytes = 0
+        }
       }
 
-      if ($controllers -gt 0 -and $null -eq $script:sendTask -and $inFlight.Count -lt $MaxInFlight) {
+      $windowOpen = ($inFlight.Count -eq 0) -or ($inFlight.Count -lt $MaxInFlight -and $inFlightBytes -lt $byteBudget)
+      if ($controllers -gt 0 -and $null -eq $script:sendTask -and $windowOpen) {
         $frame = $script:streamer.TryTakeFrame()
         if ($null -ne $frame) {
           $frameSeq++
@@ -957,9 +1003,15 @@ while ($true) {
             inf = $inFlight.Count
           }
           # Only report RTT once measured; the relay's adaptive quality treats it as a real sample.
-          if ($rttMs -gt 0) { $stats.rtt = [Math]::Round($rttMs) }
+          if ($rttMs -gt 0) {
+            $stats.rtt = [Math]::Round($rttMs)
+            $stats.brtt = [Math]::Round($baseRttMs)
+          }
+          $stats.win = [Math]::Round($byteBudget / 1024)
           $sent = Start-FrameSend $ws $frame $frameSeq ([DeskBridgeWin32]::GetActiveWindowTitle()) $stats
           $inFlight[$frameSeq] = $nowMs
+          $inFlightSize[$frameSeq] = $sent
+          $inFlightBytes += $sent
           $bytesWindow += $sent
         }
       }

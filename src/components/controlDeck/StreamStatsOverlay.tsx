@@ -31,6 +31,8 @@ export function StreamStatsOverlay({ store, hostId }: StreamStatsOverlayProps) {
   if (a) {
     rows.push(
       ['RTT', fmt(a.rtt, ' ms')],
+      ['Queue', a.rtt !== undefined && a.brtt !== undefined ? fmt(Math.max(0, a.rtt - a.brtt), ' ms') : '–'],
+      ['Window', fmt(a.win, ' KB')],
       ['Up', fmt(a.kbps !== undefined ? a.kbps / 1000 : undefined, ' Mbps', 2)],
       ['Capture', fmt(a.cap, ' ms', 1)],
       ['Encode', fmt(a.enc, ' ms', 1)],
