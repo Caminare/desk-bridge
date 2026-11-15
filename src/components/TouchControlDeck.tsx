@@ -1,0 +1,538 @@
+import React, { useRef, useState } from 'react';
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Bot,
+  ChevronDown,
+  ChevronUp,
+  Keyboard,
+  Lock,
+  Monitor,
+  MousePointerClick,
+  QrCode,
+  Send,
+  Touchpad,
+  Wifi,
+  WifiOff,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
+import type { HostProfile, RemoteInputEvent } from '../types/deskbridge';
+import { AIAssistantPanel } from './AIAssistantPanel';
+
+interface TouchControlDeckProps {
+  hosts: HostProfile[];
+  activeHost: HostProfile | null;
+  activeFrame: string | null;
+  onSelectHost: (hostId: string) => void;
+  onSendInput: (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard' | 'ai') => void;
+  onOpenQrScanner: () => void;
+  onOpenHostSetup: () => void;
+}
+
+export function TouchControlDeck({
+  hosts,
+  activeHost,
+  activeFrame,
+  onSelectHost,
+  onSendInput,
+  onOpenQrScanner,
+  onOpenHostSetup,
+}: TouchControlDeckProps) {
+  const [inputMode, setInputMode] = useState<'trackpad' | 'direct'>('trackpad');
+  const [zoomed, setZoomed] = useState(false);
+  const [showKeyboard, setShowKeyboard] = useState(false);
+  const [showMobileAI, setShowMobileAI] = useState(false);
+  const [textBuffer, setTextBuffer] = useState('');
+  const [liveTyping, setLiveTyping] = useState(false);
+  const [sensitivity, setSensitivity] = useState(1.6);
+  const [tapFeedback, setTapFeedback] = useState<{ x: number; y: number; id: number } | null>(null);
+
+  const lastPointerRef = useRef<{ x: number; y: number; startX: number; startY: number; startTime: number } | null>(null);
+  const lastTapTimeRef = useRef<number>(0);
+
+  if (!activeHost) {
+    return (
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 sm:p-12 text-center space-y-5">
+        <div className="w-12 h-12 rounded-xl bg-blue-600/10 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto">
+          <Monitor className="w-6 h-6" />
+        </div>
+        <div className="space-y-2 max-w-md mx-auto">
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
+            Select or pair a Windows computer
+          </h2>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            Scan a QR code on your Windows PC or open the Windows Host app to stream a live desktop into the Control Deck.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={onOpenQrScanner}
+            className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition-colors"
+          >
+            <QrCode className="w-4 h-4" />
+            <span>Scan QR Code</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenHostSetup}
+            className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-medium transition-colors"
+          >
+            <Monitor className="w-4 h-4" />
+            <span>Open Windows Host</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const handleScreenPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (inputMode !== 'direct') return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+    const now = Date.now();
+    const isDouble = now - lastTapTimeRef.current < 320;
+    lastTapTimeRef.current = now;
+
+    setTapFeedback({ x: nx * 100, y: ny * 100, id: now });
+    window.setTimeout(() => setTapFeedback(null), 350);
+
+    onSendInput({ type: 'click', button: 'left', double: isDouble, x: nx, y: ny }, activeHost.hostId, 'touch');
+  };
+
+  const handleTrackpadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    lastPointerRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      startTime: Date.now(),
+    };
+  };
+
+  const handleTrackpadPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!lastPointerRef.current) return;
+    const dx = Math.round((e.clientX - lastPointerRef.current.x) * sensitivity);
+    const dy = Math.round((e.clientY - lastPointerRef.current.y) * sensitivity);
+    if (dx !== 0 || dy !== 0) {
+      lastPointerRef.current.x = e.clientX;
+      lastPointerRef.current.y = e.clientY;
+      onSendInput({ type: 'mousemove', x: 0, y: 0, relative: true, dx, dy }, activeHost.hostId, 'touch');
+    }
+  };
+
+  const handleTrackpadPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!lastPointerRef.current) return;
+    const dist = Math.hypot(
+      e.clientX - lastPointerRef.current.startX,
+      e.clientY - lastPointerRef.current.startY,
+    );
+    const elapsed = Date.now() - lastPointerRef.current.startTime;
+    lastPointerRef.current = null;
+
+    if (dist < 8 && elapsed < 260) {
+      const now = Date.now();
+      const isDouble = now - lastTapTimeRef.current < 300;
+      lastTapTimeRef.current = now;
+      onSendInput({ type: 'click', button: 'left', double: isDouble }, activeHost.hostId, 'touch');
+    }
+  };
+
+  const handleSendTextSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!textBuffer) return;
+    onSendInput({ type: 'type', text: textBuffer }, activeHost.hostId, 'keyboard');
+    setTextBuffer('');
+  };
+
+  const handleTextChange = (val: string) => {
+    if (liveTyping) {
+      if (val.length > textBuffer.length) {
+        const diff = val.slice(textBuffer.length);
+        onSendInput({ type: 'type', text: diff }, activeHost.hostId, 'keyboard');
+      } else if (val.length < textBuffer.length) {
+        onSendInput({ type: 'key', key: 'Backspace' }, activeHost.hostId, 'keyboard');
+      }
+    }
+    setTextBuffer(val);
+  };
+
+  return (
+    <div className="space-y-4">
+      {hosts.length > 0 && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          {hosts.map((host) => {
+            const selected = host.hostId === activeHost.hostId;
+            return (
+              <button
+                key={host.hostId}
+                type="button"
+                onClick={() => onSelectHost(host.hostId)}
+                className={`min-h-[40px] inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  selected
+                    ? 'bg-blue-600 border-blue-600 text-white'
+                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-slate-300 dark:hover:border-slate-700'
+                }`}
+              >
+                {host.status === 'online' ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+                <span>{host.groupLabel}</span>
+                <span aria-hidden="true">·</span>
+                <span className="max-w-[140px] truncate">{host.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+        <div className="lg:col-span-7 xl:col-span-8 space-y-3">
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-semibold text-slate-900 dark:text-white truncate">
+                    {activeHost.name}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-400">·</span>
+                  <span className="text-slate-500 dark:text-slate-400 truncate">
+                    {activeHost.activeWindow || 'Windows Desktop'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setInputMode('trackpad')}
+                    className={`min-h-[34px] inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+                      inputMode === 'trackpad'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    <Touchpad className="w-3.5 h-3.5" />
+                    <span>Trackpad</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInputMode('direct')}
+                    className={`min-h-[34px] inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+                      inputMode === 'direct'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    <MousePointerClick className="w-3.5 h-3.5" />
+                    <span>Tap Screen</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setZoomed((z) => !z)}
+                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                  aria-label={zoomed ? 'Reset zoom' : 'Zoom screen'}
+                >
+                  {zoomed ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div
+              className={`relative bg-slate-950 select-none overflow-auto ${
+                inputMode === 'direct' ? 'cursor-crosshair' : ''
+              }`}
+            >
+              <div
+                onPointerDown={handleScreenPointerDown}
+                className={`relative aspect-video w-full flex items-center justify-center transition-transform duration-200 ${
+                  zoomed ? 'scale-150 origin-center' : 'scale-100'
+                }`}
+              >
+                {activeFrame ? (
+                  <img
+                    src={activeFrame}
+                    alt={`Live desktop stream of ${activeHost.name}`}
+                    referrerPolicy="no-referrer"
+                    draggable={false}
+                    className="w-full h-full object-contain pointer-events-none select-none"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center gap-2 p-8 text-center text-slate-400">
+                    <Monitor className="w-10 h-10 text-slate-600" />
+                    <p className="text-sm font-medium text-slate-300">
+                      {activeHost.status === 'online'
+                        ? 'Waiting for next video frame from Windows host...'
+                        : `${activeHost.name} is offline`}
+                    </p>
+                    <p className="text-xs text-slate-500 max-w-sm">
+                      {activeHost.status === 'online'
+                        ? 'Touchpad, keyboard, and AI commands are active.'
+                        : 'Start the DeskBridge Host agent on that computer to resume streaming.'}
+                    </p>
+                  </div>
+                )}
+
+                {tapFeedback && (
+                  <div
+                    key={tapFeedback.id}
+                    style={{ left: `${tapFeedback.x}%`, top: `${tapFeedback.y}%` }}
+                    className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full border-2 border-blue-400 bg-blue-500/20"
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="px-3 py-2.5 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2 overflow-x-auto">
+              <button
+                type="button"
+                onClick={() => setShowKeyboard((k) => !k)}
+                className={`min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+                  showKeyboard
+                    ? 'bg-blue-600 border-blue-600 text-white'
+                    : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'
+                }`}
+              >
+                <Keyboard className="w-4 h-4" />
+                <span>Keyboard</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowMobileAI(true)}
+                className="lg:hidden min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/10 border border-blue-600/30 text-blue-600 dark:text-blue-400 text-xs font-semibold whitespace-nowrap shrink-0"
+              >
+                <Bot className="w-4 h-4" />
+                <span>AI Voice</span>
+              </button>
+
+              {[
+                { label: 'Win+D', combo: 'Win+D' },
+                { label: 'Alt+Tab', combo: 'Alt+Tab' },
+                { label: 'Copy', combo: 'Ctrl+C' },
+                { label: 'Paste', combo: 'Ctrl+V' },
+                { label: 'Task Mgr', combo: 'Ctrl+Shift+Esc' },
+              ].map((sc) => (
+                <button
+                  key={sc.combo}
+                  type="button"
+                  onClick={() => onSendInput({ type: 'hotkey', combo: sc.combo }, activeHost.hostId, 'keyboard')}
+                  className="min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-xs font-medium text-slate-700 dark:text-slate-300 hover:border-blue-500 transition-colors whitespace-nowrap shrink-0"
+                >
+                  {sc.label}
+                </button>
+              ))}
+
+              <button
+                type="button"
+                onClick={() => onSendInput({ type: 'hotkey', combo: 'Win+L' }, activeHost.hostId, 'keyboard')}
+                className="min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors whitespace-nowrap shrink-0"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>Lock PC</span>
+              </button>
+            </div>
+          </div>
+
+          {showKeyboard && (
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+              <form onSubmit={handleSendTextSubmit} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={textBuffer}
+                  onChange={(e) => handleTextChange(e.target.value)}
+                  placeholder="Type text to send to Windows..."
+                  className="flex-1 min-h-[44px] px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+                <button
+                  type="submit"
+                  className="min-h-[44px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Send</span>
+                </button>
+              </form>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete'] as const).map((keyName) => (
+                    <button
+                      key={keyName}
+                      type="button"
+                      onClick={() => onSendInput({ type: 'key', key: keyName }, activeHost.hostId, 'keyboard')}
+                      className="min-h-[40px] px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-mono text-slate-700 dark:text-slate-300 hover:border-blue-500"
+                    >
+                      {keyName === 'Escape' ? 'Esc' : keyName}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => onSendInput({ type: 'key', key: 'ArrowLeft' }, activeHost.hostId, 'keyboard')}
+                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300"
+                    aria-label="Left arrow"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSendInput({ type: 'key', key: 'ArrowUp' }, activeHost.hostId, 'keyboard')}
+                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300"
+                    aria-label="Up arrow"
+                  >
+                    <ArrowUp className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSendInput({ type: 'key', key: 'ArrowDown' }, activeHost.hostId, 'keyboard')}
+                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300"
+                    aria-label="Down arrow"
+                  >
+                    <ArrowDown className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSendInput({ type: 'key', key: 'ArrowRight' }, activeHost.hostId, 'keyboard')}
+                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300"
+                    aria-label="Right arrow"
+                  >
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <label className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={liveTyping}
+                    onChange={(e) => setLiveTyping(e.target.checked)}
+                    className="rounded border-slate-300 dark:border-slate-700 text-blue-600"
+                  />
+                  <span>Live keystrokes</span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {inputMode === 'trackpad' && (
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2.5">
+              <div className="flex items-center justify-between px-1 text-xs text-slate-500 dark:text-slate-400">
+                <span>Drag to move cursor · Tap to left-click</span>
+                <label className="inline-flex items-center gap-2">
+                  <span>Speed</span>
+                  <input
+                    type="range"
+                    min={0.8}
+                    max={3.0}
+                    step={0.2}
+                    value={sensitivity}
+                    onChange={(e) => setSensitivity(Number(e.target.value))}
+                    className="w-20 accent-blue-600"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-12 gap-2">
+                <div
+                  onPointerDown={handleTrackpadPointerDown}
+                  onPointerMove={handleTrackpadPointerMove}
+                  onPointerUp={handleTrackpadPointerUp}
+                  className="col-span-10 h-44 sm:h-48 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 touch-none select-none flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-600 active:border-blue-500 transition-colors"
+                >
+                  <Touchpad className="w-6 h-6" />
+                  <span className="text-xs font-medium">Touchpad Surface</span>
+                </div>
+
+                <div className="col-span-2 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -3 }, activeHost.hostId, 'touch')}
+                    className="flex-1 min-h-[44px] rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:border-blue-500 active:scale-[0.98]"
+                    aria-label="Scroll up"
+                  >
+                    <ChevronUp className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 3 }, activeHost.hostId, 'touch')}
+                    className="flex-1 min-h-[44px] rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:border-blue-500 active:scale-[0.98]"
+                    aria-label="Scroll down"
+                  >
+                    <ChevronDown className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onSendInput({ type: 'click', button: 'left' }, activeHost.hostId, 'touch')}
+                  className="min-h-[48px] rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-white text-sm font-medium active:scale-[0.98] transition-transform"
+                >
+                  Left Click
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSendInput({ type: 'click', button: 'right' }, activeHost.hostId, 'touch')}
+                  className="min-h-[48px] rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-white text-sm font-medium active:scale-[0.98] transition-transform"
+                >
+                  Right Click
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="hidden lg:block lg:col-span-5 xl:col-span-4">
+          <AIAssistantPanel
+            activeHost={activeHost}
+            hosts={hosts}
+            activeFrame={activeFrame}
+            onDispatchInput={(input, hostId) => onSendInput(input, hostId || activeHost.hostId, 'ai')}
+            onSwitchHost={onSelectHost}
+          />
+        </div>
+      </div>
+
+      {showMobileAI && (
+        <div
+          className="fixed inset-0 z-50 lg:hidden flex items-end bg-black/60 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full rounded-t-3xl bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+              <span className="text-sm font-semibold text-slate-900 dark:text-white">
+                AI Voice & Command Drawer
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowMobileAI(false)}
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-500"
+                aria-label="Close AI drawer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-3">
+              <AIAssistantPanel
+                compact
+                activeHost={activeHost}
+                hosts={hosts}
+                activeFrame={activeFrame}
+                onDispatchInput={(input, hostId) => onSendInput(input, hostId || activeHost.hostId, 'ai')}
+                onSwitchHost={onSelectHost}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,10 @@
+{
+  "name": "DeskBridge Remote Controller",
+  "short_name": "DeskBridge",
+  "description": "Multi-computer Windows remote desktop controller with QR pairing and AI voice assistant.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#090d16",
+  "theme_color": "#2563eb"
+}
