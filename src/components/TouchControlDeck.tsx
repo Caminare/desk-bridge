@@ -50,7 +50,7 @@ export function TouchControlDeck({
   const [zoomed, setZoomed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [hudHidden, setHudHidden] = useState(false);
-  const [showFullscreenTrackpad, setShowFullscreenTrackpad] = useState(true);
+  const [showFullscreenTrackpad, setShowFullscreenTrackpad] = useState(false);
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [showMobileAI, setShowMobileAI] = useState(false);
   const [textBuffer, setTextBuffer] = useState('');
@@ -59,6 +59,7 @@ export function TouchControlDeck({
   const [tapFeedback, setTapFeedback] = useState<{ x: number; y: number; id: number } | null>(null);
 
   const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
+  const streamImgRef = useRef<HTMLImageElement | null>(null);
   const activePointersRef = useRef<Set<number>>(new Set());
   const twoFingerTapRef = useRef<boolean>(false);
   const lastPointerRef = useRef<{ x: number; y: number; startX: number; startY: number; startTime: number } | null>(null);
@@ -188,15 +189,36 @@ export function TouchControlDeck({
 
   const handleScreenPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (inputMode !== 'direct') return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    const img = streamImgRef.current;
+    const rect = (img || e.currentTarget).getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.top;
+    let width = rect.width;
+    let height = rect.height;
+
+    if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const imgRatio = img.naturalWidth / img.naturalHeight;
+      const boxRatio = rect.width / rect.height;
+      if (imgRatio > boxRatio) {
+        height = rect.width / imgRatio;
+        top = rect.top + (rect.height - height) / 2;
+      } else {
+        width = rect.height * imgRatio;
+        left = rect.left + (rect.width - width) / 2;
+      }
+    }
+
+    const nx = Math.max(0, Math.min(1, (e.clientX - left) / width));
+    const ny = Math.max(0, Math.min(1, (e.clientY - top) / height));
 
     const now = Date.now();
     const isDouble = now - lastTapTimeRef.current < 320;
     lastTapTimeRef.current = now;
 
-    setTapFeedback({ x: nx * 100, y: ny * 100, id: now });
+    const containerRect = e.currentTarget.getBoundingClientRect();
+    const fbX = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+    const fbY = ((e.clientY - containerRect.top) / containerRect.height) * 100;
+    setTapFeedback({ x: fbX, y: fbY, id: now });
     window.setTimeout(() => setTapFeedback(null), 350);
 
     onSendInput({ type: 'click', button: 'left', double: isDouble, x: nx, y: ny }, activeHost.hostId, 'touch');
@@ -290,52 +312,59 @@ export function TouchControlDeck({
     setTextBuffer(val);
   };
 
-  const renderDesktopStreamViewport = (fullscreen: boolean) => (
-    <div
-      className={`relative bg-slate-950 select-none overflow-auto ${
-        fullscreen ? 'flex-1 min-h-0 flex items-center justify-center' : ''
-      } ${inputMode === 'direct' ? 'cursor-crosshair' : ''}`}
-    >
+  const renderDesktopStreamViewport = (fullscreen: boolean) => {
+    const useGestureTrackpad = fullscreen && inputMode === 'trackpad' && !showFullscreenTrackpad;
+    return (
       <div
-        onPointerDown={handleScreenPointerDown}
-        className={`relative flex items-center justify-center transition-transform duration-200 ${
-          fullscreen ? 'w-full h-full' : 'aspect-video w-full'
-        } ${zoomed ? 'scale-150 origin-center' : 'scale-100'}`}
+        className={`relative bg-black select-none overflow-auto ${
+          fullscreen ? 'absolute inset-0 flex items-center justify-center' : 'bg-slate-950'
+        } ${inputMode === 'direct' ? 'cursor-crosshair' : useGestureTrackpad ? 'touch-none' : ''}`}
       >
-        {activeFrame ? (
-          <img
-            src={activeFrame}
-            alt={`Live desktop stream of ${activeHost.name}`}
-            referrerPolicy="no-referrer"
-            draggable={false}
-            className="w-full h-full object-contain pointer-events-none select-none"
-          />
-        ) : (
-          <div className="flex flex-col items-center justify-center gap-2 p-8 text-center text-slate-400">
-            <Monitor className="w-10 h-10 text-slate-600" />
-            <p className="text-sm font-medium text-slate-300">
-              {activeHost.status === 'online'
-                ? 'Waiting for next video frame from Windows host...'
-                : `${activeHost.name} is offline`}
-            </p>
-            <p className="text-xs text-slate-500 max-w-sm">
-              {activeHost.status === 'online'
-                ? 'Touchpad, keyboard, and AI commands are active.'
-                : 'Start the DeskBridge Host agent on that computer to resume streaming.'}
-            </p>
-          </div>
-        )}
+        <div
+          onPointerDown={useGestureTrackpad ? handleTrackpadPointerDown : handleScreenPointerDown}
+          onPointerMove={useGestureTrackpad ? handleTrackpadPointerMove : undefined}
+          onPointerUp={useGestureTrackpad ? handleTrackpadPointerUp : undefined}
+          onPointerCancel={useGestureTrackpad ? handleTrackpadPointerUp : undefined}
+          className={`relative flex items-center justify-center transition-transform duration-200 ${
+            fullscreen ? 'w-full h-full' : 'aspect-video w-full'
+          } ${zoomed ? 'scale-150 origin-center' : 'scale-100'}`}
+        >
+          {activeFrame ? (
+            <img
+              ref={streamImgRef}
+              src={activeFrame}
+              alt={`Live desktop stream of ${activeHost.name}`}
+              referrerPolicy="no-referrer"
+              draggable={false}
+              className="w-full h-full object-contain pointer-events-none select-none"
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-2 p-8 text-center text-slate-400">
+              <Monitor className="w-10 h-10 text-slate-600" />
+              <p className="text-sm font-medium text-slate-300">
+                {activeHost.status === 'online'
+                  ? 'Waiting for next video frame from Windows host...'
+                  : `${activeHost.name} is offline`}
+              </p>
+              <p className="text-xs text-slate-500 max-w-sm">
+                {activeHost.status === 'online'
+                  ? 'Touchpad, keyboard, and AI commands are active.'
+                  : 'Start the DeskBridge Host agent on that computer to resume streaming.'}
+              </p>
+            </div>
+          )}
 
-        {tapFeedback && (
-          <div
-            key={tapFeedback.id}
-            style={{ left: `${tapFeedback.x}%`, top: `${tapFeedback.y}%` }}
-            className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full border-2 border-blue-400 bg-blue-500/20"
-          />
-        )}
+          {tapFeedback && (
+            <div
+              key={tapFeedback.id}
+              style={{ left: `${tapFeedback.x}%`, top: `${tapFeedback.y}%` }}
+              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full border-2 border-blue-400 bg-blue-500/20"
+            />
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderKeyboardDrawer = (compact = false) => (
     <div
@@ -689,12 +718,14 @@ export function TouchControlDeck({
       {isFullscreen && (
         <div
           ref={fullscreenContainerRef}
-          className="fixed inset-0 z-50 bg-black flex flex-col overflow-hidden"
+          className="fixed inset-0 z-50 bg-black overflow-hidden"
         >
+          {renderDesktopStreamViewport(true)}
+
           {!hudHidden ? (
-            <div className="px-3 py-2 pt-safe bg-slate-950/90 backdrop-blur-md border-b border-slate-800 flex items-center justify-between gap-2 overflow-x-auto shrink-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-xs font-semibold text-white truncate max-w-[120px] sm:max-w-[200px]">
+            <div className="absolute top-2 left-2 right-2 z-10 pointer-events-none flex justify-center pt-safe">
+              <div className="pointer-events-auto max-w-full px-2.5 py-1.5 rounded-2xl bg-slate-950/75 backdrop-blur-md border border-slate-700/70 flex items-center gap-1.5 overflow-x-auto shadow-lg">
+                <span className="text-xs font-semibold text-white truncate max-w-[100px] sm:max-w-[180px] pl-1">
                   {activeHost.name}
                 </span>
                 {hosts.length > 1 && (
@@ -702,7 +733,7 @@ export function TouchControlDeck({
                     value={activeHost.hostId}
                     onChange={(e) => onSelectHost(e.target.value)}
                     aria-label="Switch computer"
-                    className="min-h-[36px] px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200"
+                    className="min-h-[34px] px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200"
                   >
                     {hosts.map((h) => (
                       <option key={h.hostId} value={h.hostId}>
@@ -711,18 +742,16 @@ export function TouchControlDeck({
                     ))}
                   </select>
                 )}
-              </div>
 
-              <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
                   onClick={() => setInputMode(inputMode === 'trackpad' ? 'direct' : 'trackpad')}
-                  className="min-h-[38px] inline-flex items-center gap-1.5 px-2.5 rounded-lg bg-slate-800 text-xs font-medium text-white"
+                  className="min-h-[36px] inline-flex items-center gap-1 px-2.5 rounded-xl bg-slate-800/90 text-xs font-medium text-white shrink-0"
                 >
                   {inputMode === 'trackpad' ? (
                     <>
                       <Touchpad className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Trackpad</span>
+                      <span>Drag Mouse</span>
                     </>
                   ) : (
                     <>
@@ -736,19 +765,19 @@ export function TouchControlDeck({
                   <button
                     type="button"
                     onClick={() => setShowFullscreenTrackpad((v) => !v)}
-                    className={`min-h-[38px] px-2.5 rounded-lg text-xs font-medium ${
-                      showFullscreenTrackpad ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300'
+                    className={`min-h-[36px] px-2.5 rounded-xl text-xs font-medium shrink-0 ${
+                      showFullscreenTrackpad ? 'bg-blue-600 text-white' : 'bg-slate-800/90 text-slate-300'
                     }`}
                   >
-                    {showFullscreenTrackpad ? 'Hide Pad' : 'Show Pad'}
+                    {showFullscreenTrackpad ? 'Hide Pad' : 'Pad'}
                   </button>
                 )}
 
                 <button
                   type="button"
                   onClick={() => setZoomed((z) => !z)}
-                  className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg ${
-                    zoomed ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-200'
+                  className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl shrink-0 ${
+                    zoomed ? 'bg-blue-600 text-white' : 'bg-slate-800/90 text-slate-200'
                   }`}
                   aria-label={zoomed ? 'Reset zoom' : 'Zoom screen'}
                 >
@@ -758,8 +787,8 @@ export function TouchControlDeck({
                 <button
                   type="button"
                   onClick={() => setShowKeyboard((k) => !k)}
-                  className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg ${
-                    showKeyboard ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-200'
+                  className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl shrink-0 ${
+                    showKeyboard ? 'bg-blue-600 text-white' : 'bg-slate-800/90 text-slate-200'
                   }`}
                   aria-label="Toggle keyboard"
                 >
@@ -769,7 +798,7 @@ export function TouchControlDeck({
                 <button
                   type="button"
                   onClick={() => setShowMobileAI(true)}
-                  className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg bg-slate-800 text-blue-400"
+                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl bg-slate-800/90 text-blue-400 shrink-0"
                   aria-label="Open AI Voice Assistant"
                 >
                   <Bot className="w-4 h-4" />
@@ -778,7 +807,7 @@ export function TouchControlDeck({
                 <button
                   type="button"
                   onClick={() => setHudHidden(true)}
-                  className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg bg-slate-800 text-slate-300"
+                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl bg-slate-800/90 text-slate-300 shrink-0"
                   aria-label="Hide controls"
                 >
                   <EyeOff className="w-4 h-4" />
@@ -787,7 +816,7 @@ export function TouchControlDeck({
                 <button
                   type="button"
                   onClick={exitFullscreen}
-                  className="min-h-[38px] inline-flex items-center gap-1 px-2.5 rounded-lg bg-red-600/90 hover:bg-red-600 text-xs font-semibold text-white"
+                  className="min-h-[36px] inline-flex items-center gap-1 px-2.5 rounded-xl bg-red-600/90 hover:bg-red-600 text-xs font-semibold text-white shrink-0"
                   aria-label="Exit full screen"
                 >
                   <Minimize2 className="w-3.5 h-3.5" />
@@ -796,11 +825,11 @@ export function TouchControlDeck({
               </div>
             </div>
           ) : (
-            <div className="fixed top-3 right-3 z-[60] flex items-center gap-1.5">
+            <div className="fixed top-3 right-3 z-[60] flex items-center gap-1.5 pt-safe">
               <button
                 type="button"
                 onClick={() => setHudHidden(false)}
-                className="min-h-[40px] px-3 rounded-full bg-slate-950/80 border border-slate-700 text-xs font-medium text-white backdrop-blur-md inline-flex items-center gap-1.5"
+                className="min-h-[40px] px-3 rounded-full bg-slate-950/75 border border-slate-700 text-xs font-medium text-white backdrop-blur-md inline-flex items-center gap-1.5"
               >
                 <Eye className="w-3.5 h-3.5" />
                 <span>Controls</span>
@@ -808,7 +837,7 @@ export function TouchControlDeck({
               <button
                 type="button"
                 onClick={exitFullscreen}
-                className="min-h-[40px] min-w-[40px] rounded-full bg-slate-950/80 border border-slate-700 text-white backdrop-blur-md flex items-center justify-center"
+                className="min-h-[40px] min-w-[40px] rounded-full bg-slate-950/75 border border-slate-700 text-white backdrop-blur-md flex items-center justify-center"
                 aria-label="Exit full screen"
               >
                 <Minimize2 className="w-4 h-4" />
@@ -816,16 +845,51 @@ export function TouchControlDeck({
             </div>
           )}
 
-          {renderDesktopStreamViewport(true)}
+          {!hudHidden && inputMode === 'trackpad' && !showFullscreenTrackpad && (
+            <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1.5 pb-safe">
+              <button
+                type="button"
+                onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -3 }, activeHost.hostId, 'touch')}
+                className="min-h-[40px] min-w-[40px] rounded-xl bg-slate-950/75 backdrop-blur-md border border-slate-700/70 text-slate-200 flex items-center justify-center active:scale-95"
+                aria-label="Scroll up"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 3 }, activeHost.hostId, 'touch')}
+                className="min-h-[40px] min-w-[40px] rounded-xl bg-slate-950/75 backdrop-blur-md border border-slate-700/70 text-slate-200 flex items-center justify-center active:scale-95"
+                aria-label="Scroll down"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onSendInput({ type: 'click', button: 'left' }, activeHost.hostId, 'touch')}
+                className="min-h-[40px] px-3 rounded-xl bg-slate-950/75 backdrop-blur-md border border-slate-700/70 text-xs font-semibold text-white active:scale-95"
+              >
+                Left
+              </button>
+              <button
+                type="button"
+                onClick={() => onSendInput({ type: 'click', button: 'right' }, activeHost.hostId, 'touch')}
+                className="min-h-[40px] px-3 rounded-xl bg-slate-950/75 backdrop-blur-md border border-slate-700/70 text-xs font-semibold text-white active:scale-95"
+              >
+                Right
+              </button>
+            </div>
+          )}
 
           {!hudHidden && showKeyboard && (
-            <div className="p-2 bg-slate-950 border-t border-slate-800 shrink-0">
+            <div className="absolute bottom-14 left-2 right-2 sm:left-auto sm:right-3 sm:w-[440px] z-20 pb-safe">
               {renderKeyboardDrawer(true)}
             </div>
           )}
 
           {!hudHidden && inputMode === 'trackpad' && showFullscreenTrackpad && (
-            <div className="shrink-0">{renderTrackpadPanel(true)}</div>
+            <div className="absolute bottom-2 left-2 right-2 sm:left-auto sm:right-3 sm:w-96 z-20 rounded-2xl overflow-hidden border border-slate-700/70 shadow-2xl">
+              {renderTrackpadPanel(true)}
+            </div>
           )}
         </div>
       )}
