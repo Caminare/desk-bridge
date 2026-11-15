@@ -29,7 +29,8 @@ DeskBridge gives full keyboard, mouse and PowerShell control of every enrolled P
 - **Agent enrollment**: downloading a host agent requires login, and each script embeds the server's **enrollment key**. **Treat downloaded agent scripts as secrets.** On first registration, the relay gives each host its own **host secret** (stored in `%APPDATA%\DeskBridge-host-secret.txt` or `~/.deskbridge-host.json`). After that, only the holder of that secret (or the logged-in owner's browser host) can register with that host id. To re-enroll a machine, delete it in the Fleet tab.
 - **Frame integrity**: screen frames are always attributed to the socket that registered the host. A host cannot inject frames into another host's stream.
 - **Cross-origin protection**: session cookies are `SameSite=Lax`, and WebSocket sessions from a foreign `Origin` are treated as anonymous.
-- **Limits**: WebSocket messages are capped at 8 MB, and failed logins are rate-limited.
+- **Limits**: WebSocket messages are capped at 8 MB, failed logins are rate-limited, and AI requests are limited per session (`AI_RATE_LIMIT_PER_MIN`, default 20).
+- **Liveness**: the relay pings every connection (`DESKBRIDGE_HEARTBEAT_MS`, default 15 s) and drops unresponsive ones, so a dead PC shows as offline within about two intervals.
 - **Pairing codes** are now only a convenient way to find a host. They are not credentials, because pairing requires an owner session.
 - **Not end-to-end encrypted**: TLS (via ngrok/HTTPS) protects each device↔relay hop, but the relay itself sees frames and keystrokes. Run it on a machine you trust.
 
@@ -62,7 +63,7 @@ DeskBridge uses a three-part real-time architecture connected through a central 
                                                            +----------------------------+
 ```
 
-### 1. Relay Server (`server.ts`)
+### 1. Relay Server (`server.ts` → `server/relay.ts`)
 - Runs an Express HTTP server and attaches a `ws` WebSocket server at `/ws`.
 - Maintains paired workstation profiles in `.deskbridge-hosts.json` alongside live WebSocket room mappings (`hosts` registry).
 - Routes `host:register` and `host:frame` events from connected Windows PCs to authorized controllers, and forwards `client:input` events (`mousemove`, `click`, `scroll`, `type`, `key`, `hotkey`, `launch`, `shell`, `clipboard`) directly to the target host.
@@ -100,7 +101,11 @@ DeskBridge uses a three-part real-time architecture connected through a central 
    ```bash
    npm run dev
    ```
-4. **Or build and run for production**:
+4. **Run the checks** (type-check, tests, build; the same as CI):
+   ```bash
+   npm run check
+   ```
+5. **Or build and run for production**:
    ```bash
    npm run build
    npm start
