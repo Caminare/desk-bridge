@@ -13,7 +13,8 @@ Each Windows computer runs a lightweight host agent that exposes its desktop ove
 - **Touch-First Remote Control Deck**:
   - **Trackpad Mode**: Laptop-style thumb trackpad with adjustable pointer speed, tap-to-click, dedicated Left/Right Click buttons, and vertical scroll controls.
   - **Direct Tap Screen Mode**: Tap or double-tap directly on the streamed Windows desktop with 1.5× zoom support.
-  - **Keyboard & Windows Shortcuts**: Send text from your mobile keyboard (buffered or live keystrokes) plus quick shortcuts (`Win+D`, `Alt+Tab`, `Ctrl+C`, `Ctrl+V`, `Ctrl+Shift+Esc`, `Win+L`, and arrow/navigation keys).
+  - **Keyboard & Windows Shortcuts**: Send any text, including accents, CJK and emoji, from your mobile keyboard (buffered or live keystrokes). The toolbar has quick shortcuts (`Win+D`, `Alt+Tab`, copy/paste/undo, `Win+E`, `Alt+F4`, Task Manager, `Win+L`). The keyboard drawer adds sticky **Ctrl / Alt / Shift / Win** modifiers, F1–F12 and navigation keys, and a field for sending any combo (e.g. `Ctrl+Shift+T`).
+  - **Multi-Monitor**: hosts with several displays show a monitor picker in the Control Deck and the fullscreen toolbar. The agent's `-MonitorIndex` parameter picks the starting display.
 - **Gemini Voice & Text Assistant**:
   - Record voice commands (`gemini-3.5-transcribe`) or type natural instructions (`gemini-4-hydrogen` in Fast or Deep Reason mode).
   - Screen-aware multimodal vision inspects the active computer's live frame to locate UI elements or summarize what is on screen.

@@ -42,3 +42,38 @@ test('Node agent is valid JavaScript and never shells out for launch', () => {
   assert.match(js, /launchTarget\(String\(input\.target\)\)/);
   assert.doesNotMatch(js, /start ""/);
 });
+
+test('PowerShell agent: balanced C# and script blocks', () => {
+  const ps1 = generatePowerShellHostScript(opts);
+  const start = ps1.indexOf('Add-Type @"');
+  const end = ps1.indexOf('"@', start);
+  const cs = ps1.slice(start, end);
+  const body = ps1.slice(end + 2);
+  const count = (t: string, c: string) => t.split(c).length - 1;
+  for (const [open, close] of [['{', '}'], ['(', ')'], ['[', ']']]) {
+    assert.equal(count(cs, open), count(cs, close), `C# ${open}${close} balanced`);
+    assert.equal(count(body, open), count(body, close), `PowerShell ${open}${close} balanced`);
+  }
+  // The C# block lives in a JS template literal: escape sequences there would be mangled.
+  assert.doesNotMatch(cs, /\\/, 'no backslashes in C# block');
+  assert.doesNotMatch(ps1, /undefined/);
+});
+
+test('PowerShell agent: SendInput keyboard and monitor switching are wired up', () => {
+  const ps1 = generatePowerShellHostScript(opts);
+  for (const needle of [
+    'public static uint TypeUnicode(string text)',
+    'public static uint SendCombo(ushort[] modifiers, ushort vk)',
+    'function Send-KeyCombo([string]$combo)',
+    'function Select-Monitor([int]$index)',
+    "[DeskBridgeWin32]::TypeUnicode([string]$evt.text)",
+    "    'monitor' {",
+    "event = 'host:update'",
+    'monitors = (Get-MonitorList)',
+    '[int]$MonitorIndex = -1',
+  ]) {
+    assert.ok(ps1.includes(needle), `missing: ${needle}`);
+  }
+  // SendKeys is gone: it mangled Unicode and could not express arbitrary combos.
+  assert.doesNotMatch(ps1, /SendKeys/);
+});

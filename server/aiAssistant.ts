@@ -76,7 +76,8 @@ const computerControlTools: FunctionDeclaration[] = [
   },
   {
     name: 'press_hotkey',
-    description: 'Trigger a Windows keyboard shortcut such as Win+D, Alt+Tab, Ctrl+C, Ctrl+V, Ctrl+S, Ctrl+Shift+Esc, or Enter/Tab/Escape.',
+    description:
+      'Trigger any Windows keyboard shortcut written as modifiers plus a key joined by "+", e.g. Win+D, Alt+Tab, Ctrl+Shift+T, Win+E, Alt+F4, Ctrl+Shift+Esc, F5, or Enter/Tab/Escape. Modifiers: Ctrl, Alt, Shift, Win.',
     parameters: {
       type: Type.OBJECT,
       properties: {

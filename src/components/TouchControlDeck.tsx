@@ -7,7 +7,8 @@ import { mapToStreamCoords } from '../lib/streamCoords';
 import { AIAssistantPanel } from './AIAssistantPanel';
 import { FullscreenHud, type InputMode } from './controlDeck/FullscreenHud';
 import { HostChips } from './controlDeck/HostChips';
-import { KeyboardDrawer } from './controlDeck/KeyboardDrawer';
+import { KeyboardDrawer, type KeyModifier } from './controlDeck/KeyboardDrawer';
+import { MonitorPicker } from './controlDeck/MonitorPicker';
 import { MobileAIDrawer } from './controlDeck/MobileAIDrawer';
 import { QUALITY_OPTIONS, QUALITY_PRESETS, type StreamQualityPreset } from './controlDeck/qualityPresets';
 import { StreamViewport } from './controlDeck/StreamViewport';
@@ -42,6 +43,7 @@ export function TouchControlDeck({
   const [showMobileAI, setShowMobileAI] = useState(false);
   const [textBuffer, setTextBuffer] = useState('');
   const [liveTyping, setLiveTyping] = useState(true);
+  const [modifiers, setModifiers] = useState<KeyModifier[]>([]);
   const [sensitivity, setSensitivity] = useState(3.2);
   const [tapFeedback, setTapFeedback] = useState<{ x: number; y: number; id: number } | null>(null);
 
@@ -472,6 +474,12 @@ export function TouchControlDeck({
   };
 
   const handleTextChange = (val: string) => {
+    if (modifiers.length > 0 && val.length > textBuffer.length) {
+      // With sticky modifiers active, a typed character becomes a shortcut (e.g. Ctrl + c),
+      // not text, and is kept out of the buffer.
+      sendKey(val.slice(-1));
+      return;
+    }
     if (liveTyping) {
       let common = 0;
       const minLen = Math.min(textBuffer.length, val.length);
@@ -530,7 +538,18 @@ export function TouchControlDeck({
 
   const sendClick = (button: 'left' | 'right') => onSendInput({ type: 'click', button }, activeHost.hostId, 'touch');
   const sendScroll = (deltaY: number) => onSendInput({ type: 'scroll', deltaX: 0, deltaY }, activeHost.hostId, 'touch');
-  const sendKey = (key: string) => onSendInput({ type: 'key', key }, activeHost.hostId, 'keyboard');
+  const sendKey = (key: string) => {
+    if (modifiers.length > 0) {
+      onSendInput({ type: 'key', key, modifiers }, activeHost.hostId, 'keyboard');
+      setModifiers([]);
+      return;
+    }
+    onSendInput({ type: 'key', key }, activeHost.hostId, 'keyboard');
+  };
+  const sendCombo = (combo: string) => onSendInput({ type: 'hotkey', combo }, activeHost.hostId, 'keyboard');
+  const toggleModifier = (m: KeyModifier) =>
+    setModifiers((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
+  const selectMonitor = (index: number) => onSendInput({ type: 'monitor', index }, activeHost.hostId, 'touch');
   const sendText = (text: string) => onSendInput({ type: 'type', text }, activeHost.hostId, 'keyboard');
   const dispatchAiInput = (input: RemoteInputEvent, hostId?: string) =>
     onSendInput(input, hostId || activeHost.hostId, 'ai');
@@ -583,6 +602,9 @@ export function TouchControlDeck({
       onLiveTypingChange={setLiveTyping}
       onSendKey={sendKey}
       onSendText={sendText}
+      modifiers={modifiers}
+      onToggleModifier={toggleModifier}
+      onSendCombo={sendCombo}
     />
   );
 
@@ -634,6 +656,7 @@ export function TouchControlDeck({
             onClick={sendClick}
             onScroll={sendScroll}
             onQualityChange={handleQualityChange}
+            onSelectMonitor={selectMonitor}
             onToggleZoom={() => setZoomed((z) => !z)}
             onToggleKeyboard={toggleKeyboardDrawer}
             onOpenAI={() => setShowMobileAI(true)}
@@ -693,6 +716,12 @@ export function TouchControlDeck({
                     <span>Tap Screen</span>
                   </button>
                 </div>
+
+                <MonitorPicker
+                  host={activeHost}
+                  onSelect={selectMonitor}
+                  className="min-h-[36px] px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200"
+                />
 
                 <select
                   value={streamQuality}
@@ -767,6 +796,9 @@ export function TouchControlDeck({
                 { label: 'Alt+Tab', combo: 'Alt+Tab' },
                 { label: 'Copy', combo: 'Ctrl+C' },
                 { label: 'Paste', combo: 'Ctrl+V' },
+                { label: 'Undo', combo: 'Ctrl+Z' },
+                { label: 'Explorer', combo: 'Win+E' },
+                { label: 'Close', combo: 'Alt+F4' },
                 { label: 'Task Mgr', combo: 'Ctrl+Shift+Esc' },
               ].map((sc) => (
                 <button

@@ -13,6 +13,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import type { HostProfile } from '../../types/deskbridge';
+import { MonitorPicker } from './MonitorPicker';
 import { QUALITY_OPTIONS, type StreamQualityPreset } from './qualityPresets';
 
 export type InputMode = 'trackpad' | 'direct';
@@ -34,6 +35,7 @@ interface FullscreenHudProps {
   onClick: (button: 'left' | 'right') => void;
   onScroll: (deltaY: number) => void;
   onQualityChange: (preset: StreamQualityPreset) => void;
+  onSelectMonitor: (index: number) => void;
   onToggleZoom: () => void;
   onToggleKeyboard: () => void;
   onOpenAI: () => void;
@@ -158,6 +160,12 @@ export function FullscreenHud(props: FullscreenHudProps) {
             {showTrackpad ? 'Hide Pad' : 'Pad'}
           </button>
         )}
+
+        <MonitorPicker
+          host={host}
+          onSelect={props.onSelectMonitor}
+          className="min-h-[36px] px-2 rounded-xl bg-slate-800/90 border border-slate-700 text-xs font-medium text-slate-200 shrink-0"
+        />
 
         <select
           value={streamQuality}

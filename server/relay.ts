@@ -32,7 +32,7 @@ import {
   SESSION_COOKIE,
   verifySecret,
 } from './auth.js';
-import type { AIThinkingMode, HostProfile, RemoteInputEvent } from '../src/types/deskbridge.js';
+import type { AIThinkingMode, HostProfile, MonitorInfo, RemoteInputEvent } from '../src/types/deskbridge.js';
 
 export interface RelayOptions {
   /** Port to listen on; 0 picks a free port. Default 3000. */
@@ -62,6 +62,39 @@ export interface RelayHandle {
 
 const WS_MAX_PAYLOAD = 8 * 1024 * 1024;
 const HOST_ID_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+const MAX_MONITORS = 16;
+
+function clampDimension(value: unknown, fallback: number): number {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) && n >= 1 && n <= 32768 ? n : fallback;
+}
+
+/** Validates an agent-supplied monitor list; returns undefined if absent or malformed. */
+export function sanitizeMonitors(value: unknown): MonitorInfo[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const monitors = value.slice(0, MAX_MONITORS).flatMap((m, i): MonitorInfo[] => {
+    if (!m || typeof m !== 'object') return [];
+    const rec = m as Record<string, unknown>;
+    const width = clampDimension(rec.width, 0);
+    const height = clampDimension(rec.height, 0);
+    if (!width || !height) return [];
+    return [
+      {
+        index: Number.isInteger(rec.index) ? (rec.index as number) : i,
+        name: String(rec.name ?? `Display ${i + 1}`).slice(0, 64),
+        width,
+        height,
+        primary: rec.primary === true,
+      },
+    ];
+  });
+  return monitors.length > 0 ? monitors : undefined;
+}
+
+function sanitizeActiveMonitor(value: unknown, monitors: MonitorInfo[] | undefined): number | undefined {
+  if (!monitors || !Number.isInteger(value)) return undefined;
+  return monitors.some((m) => m.index === value) ? (value as number) : undefined;
+}
 
 interface HostConnection {
   profile: HostProfile;
@@ -641,8 +674,8 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           name: String(payload.name || existing?.profile.name || 'Windows PC'),
           groupLabel: String(payload.groupLabel || payload.jobLabel || existing?.profile.groupLabel || 'Workstation'),
           os: String(payload.os || 'Windows 11 Pro'),
-          screenWidth: Number(payload.screenWidth || 1920),
-          screenHeight: Number(payload.screenHeight || 1080),
+          screenWidth: clampDimension(payload.screenWidth, 1920),
+          screenHeight: clampDimension(payload.screenHeight, 1080),
           pairingCode,
           pairingUrl,
           status: 'online',
@@ -653,6 +686,11 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           memoryUsage: Number(payload.memoryUsage ?? 42),
           connectedControllers: existing?.controllers.size ?? 0,
         };
+        const monitors = sanitizeMonitors(payload.monitors);
+        if (monitors) {
+          profile.monitors = monitors;
+          profile.activeMonitor = sanitizeActiveMonitor(payload.activeMonitor, monitors);
+        }
 
         const controllers = existing?.controllers ?? new Set<WebSocket>();
         hosts.set(hostId, {
@@ -674,6 +712,26 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           ...(issuedSecret ? { hostSecret: issuedSecret } : {}),
         });
         sendJson(ws, 'host:controller_count', { count: controllers.size });
+        broadcastFleet();
+        return;
+      }
+
+      if (event === 'host:update' && ownedHostId) {
+        // Agent-reported changes (e.g. after switching monitors). Only from the owning socket.
+        const entry = hosts.get(ownedHostId);
+        if (!entry || entry.ws !== ws) return;
+        if (payload.screenWidth !== undefined) {
+          entry.profile.screenWidth = clampDimension(payload.screenWidth, entry.profile.screenWidth);
+        }
+        if (payload.screenHeight !== undefined) {
+          entry.profile.screenHeight = clampDimension(payload.screenHeight, entry.profile.screenHeight);
+        }
+        const monitors = sanitizeMonitors(payload.monitors);
+        if (monitors) entry.profile.monitors = monitors;
+        if (payload.activeMonitor !== undefined) {
+          entry.profile.activeMonitor = sanitizeActiveMonitor(payload.activeMonitor, entry.profile.monitors);
+        }
+        persistHosts();
         broadcastFleet();
         return;
       }

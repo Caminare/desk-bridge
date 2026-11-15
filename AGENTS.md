@@ -70,12 +70,14 @@ If you change dependencies, run `bun install` so `bun.lock` stays in sync. CI us
 
 All WebSocket traffic goes over `/ws`. JSON messages are `{ event, payload }`.
 
-- **Host → relay**: `host:register` (needs `enrollKey`, plus `hostSecret` after first enrollment, unless the socket has an owner session), `host:frame` (JSON data-URL frame, browser host), `host:regenerate_code`.
+- **Host → relay**: `host:register` (needs `enrollKey`, plus `hostSecret` after first enrollment, unless the socket has an owner session; may include `monitors` and `activeMonitor`), `host:update` (screen size / monitor changes, validated by `sanitizeMonitors`), `host:frame` (JSON data-URL frame, browser host), `host:regenerate_code`.
 - **Binary frames (host → relay → controllers)**: `0x44 0x01`, a big-endian `uint16` header length, a UTF-8 JSON header (`hostId`, `seq`, `activeWindow`, `timestamp`), then the JPEG bytes. The relay rewrites `hostId` to the socket's registered host.
 - **Relay → host**: `host:registered` (may include a one-time `hostSecret`), `host:auth_error`, `host:controller_count`, `host:frame_ack`, `client:input`.
 - **Controller → relay** (owner session required): `client:subscribe_fleet`, `client:pair`, `client:unpair`, `client:input`, `client:frame_ack`.
 - **Relay → controller**: `fleet:update`, `client:paired`, `client:pair_error`, `host:frame`, `host:status`, `auth:required`.
 - **Close codes**: `4401` authentication failed, `4409` host replaced by a newer connection, `1009` message too big (limit 8 MB).
+
+Input events (`RemoteInputEvent`): `mousemove`, `click`, `mousedown`/`mouseup`, `scroll`, `type` (any Unicode; `\n` = Enter), `key` (`key` plus optional `modifiers`), `hotkey` (combo string such as `Ctrl+Shift+T`), `launch`, `shell`, `clipboard`, `quality`, `monitor`.
 
 Flow control: hosts keep at most about 2 unacknowledged frames in flight, and the relay drops frames for controllers whose `bufferedAmount` is high. Preserve both mechanisms when touching streaming code.
 
@@ -98,7 +100,10 @@ If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`
 - React 19 function components with hooks, Tailwind v4 utility classes, `lucide-react` icons, and dark mode via the `dark` class on `<html>`.
 - Mobile-first UI: touch targets ≥ 40–44px, and test at phone width (~390px).
 - Keep components presentational where possible. Put logic that can run without the DOM in `src/lib/` and unit-test it.
-- Keep the PowerShell agent dependency-free (PowerShell 5.1 + .NET Framework only). Remember it is generated from a JS template literal: escape `` ` ``, `${` and backslashes accordingly.
+- Keep the PowerShell agent dependency-free (PowerShell 5.1 + .NET Framework only). It is generated from a JS template literal: escape `` ` ``, `${` and backslashes accordingly. In the inline C# (`Add-Type`), avoid backslashes entirely (use `(char)10`, not `'\n'`), and stick to C# 5 syntax (no `$"..."` interpolation), because Windows PowerShell 5.1 compiles it with the .NET Framework compiler.
+- Keyboard input goes through `SendInput` (`[DeskBridgeWin32]::TypeUnicode` / `SendCombo`) and `Send-KeyCombo`. Add new key names to `$script:VkMap`, and don't reintroduce `SendKeys`.
+- Script-level agent state that functions change must be assigned through `$script:` (e.g. `Select-Monitor` swaps `$script:bounds`, `$script:capBmp`).
+- `tests/agentGenerator.test.ts` only checks the generated script's structure. **Any agent change must also be run on a real Windows 10/11 machine**, because CI cannot run PowerShell or compile the C#.
 - Gemini model ids live in `server/aiAssistant.ts` with env overrides `GEMINI_MODEL` and `GEMINI_TRANSCRIBE_MODEL`. The Gemini key is only read server-side.
 - Don't commit build output (`dist/`), runtime state files, or a second lockfile.
 
@@ -109,4 +114,6 @@ If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`
 
 ## Known gaps / roadmap
 
-- There are no UI tests.
+- There are no UI tests, and the PowerShell agent has no automated runtime tests (no Windows runner).
+- `Win+L` is mapped to `LockWorkStation()`, and `Ctrl+Alt+Del` cannot be injected at all (secure attention sequence).
+- An agent running unelevated cannot send input to elevated windows (UIPI).

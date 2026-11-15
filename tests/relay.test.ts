@@ -194,6 +194,49 @@ describe('WebSocket host and controller protocol', () => {
     assert.equal(c.messages.filter((m) => m.event === 'host:frame').length, 0);
   });
 
+  test('hosts report monitors; host:update is validated and broadcast', async () => {
+    const h = await registerHost('multi', {
+      screenWidth: 2560,
+      screenHeight: 1440,
+      monitors: [
+        { index: 0, name: 'DISPLAY1', width: 2560, height: 1440, primary: true },
+        { index: 1, name: 'DISPLAY2', width: 1920, height: 1080, primary: false },
+        { index: 2, name: 'bogus', width: -5, height: 'x' },
+      ],
+      activeMonitor: 0,
+    });
+    const c = await openController();
+    const hostIn = (msgs: TestSocket['messages']) =>
+      [...msgs].reverse().find((m) => m.event === 'fleet:update')?.payload as unknown as Array<Record<string, any>>;
+    let multi = hostIn(c.messages).find((x) => x.hostId === 'multi')!;
+    assert.equal(multi.monitors.length, 2, 'malformed monitor dropped');
+    assert.equal(multi.activeMonitor, 0);
+
+    const before = c.messages.length;
+    h.send('host:update', { screenWidth: 1920, screenHeight: 1080, activeMonitor: 1 });
+    await c.until((s) => s.messages.length > before && s.messages.slice(before).some((m) => m.event === 'fleet:update'), 2000, 'fleet update');
+    multi = hostIn(c.messages).find((x) => x.hostId === 'multi')!;
+    assert.equal(multi.activeMonitor, 1);
+    assert.equal(multi.screenWidth, 1920);
+
+    // Unknown monitor index and absurd sizes are rejected.
+    const mark = c.messages.length;
+    h.send('host:update', { screenWidth: 999999, activeMonitor: 7 });
+    await c.until((s) => s.messages.slice(mark).some((m) => m.event === 'fleet:update'), 2000, 'fleet update');
+    multi = hostIn(c.messages).find((x) => x.hostId === 'multi')!;
+    assert.equal(multi.screenWidth, 1920);
+    assert.equal(multi.activeMonitor, undefined);
+  });
+
+  test('monitor switch input is forwarded to the host', async () => {
+    const h = await registerHost('multi-2');
+    const c = await openController();
+    c.send('client:pair', { hostId: 'multi-2' });
+    await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
+    c.send('client:input', { hostId: 'multi-2', input: { type: 'monitor', index: 1 } });
+    await h.until((s) => s.messages.some((m) => m.event === 'client:input' && m.payload.type === 'monitor'), 2000, 'input');
+  });
+
   test('oversized messages close the socket without crashing the relay', async () => {
     const big = await open();
     big.ws.send(Buffer.alloc(9 * 1024 * 1024));
