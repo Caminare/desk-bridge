@@ -16,6 +16,7 @@ import type {
   HostProfile,
   RemoteInputEvent,
 } from '../types/deskbridge';
+import { apiFetch } from '../lib/auth';
 
 interface ChatTurn {
   id: string;
@@ -68,7 +69,7 @@ export function AIAssistantPanel({
   ]);
 
   useEffect(() => {
-    fetch('/api/health')
+    apiFetch('/api/health')
       .then((r) => r.json())
       .then((d: { geminiReady?: boolean }) => setGeminiReady(Boolean(d.geminiReady)))
       .catch(() => {});
@@ -188,7 +189,7 @@ export function AIAssistantPanel({
     setPromptInput('');
 
     try {
-      const res = await fetch('/api/ai/command', {
+      const res = await apiFetch('/api/ai/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -247,7 +248,7 @@ export function AIAssistantPanel({
             reader.readAsDataURL(blob);
           });
 
-          const res = await fetch('/api/ai/voice-command', {
+          const res = await apiFetch('/api/ai/voice-command', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

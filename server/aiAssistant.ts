@@ -7,6 +7,21 @@ import type {
   HostProfile,
 } from '../src/types/deskbridge.js';
 
+/** Short, single-line description of a Gemini SDK error for logs and user-facing warnings. */
+export function describeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const oneLine = raw.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 200 ? `${oneLine.slice(0, 197)}...` : oneLine || 'unknown error';
+}
+
+/** Thrown when every candidate model failed; lists each model's error. */
+export class GeminiUnavailableError extends Error {
+  constructor(public readonly failures: Array<{ model: string; error: string }>) {
+    super(`All Gemini models failed: ${failures.map((f) => `${f.model}: ${f.error}`).join(' | ')}`);
+    this.name = 'GeminiUnavailableError';
+  }
+}
+
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
@@ -16,7 +31,7 @@ function getGeminiClient(): GoogleGenAI {
     apiKey,
     httpOptions: {
       headers: {
-        'User-Agent': 'aistudio-build',
+        'User-Agent': 'deskbridge',
       },
     },
   });
@@ -61,7 +76,8 @@ const computerControlTools: FunctionDeclaration[] = [
   },
   {
     name: 'press_hotkey',
-    description: 'Trigger a Windows keyboard shortcut such as Win+D, Alt+Tab, Ctrl+C, Ctrl+V, Ctrl+S, Ctrl+Shift+Esc, or Enter/Tab/Escape.',
+    description:
+      'Trigger any Windows keyboard shortcut written as modifiers plus a key joined by "+", e.g. Win+D, Alt+Tab, Ctrl+Shift+T, Win+E, Alt+F4, Ctrl+Shift+Esc, F5, or Enter/Tab/Escape. Modifiers: Ctrl, Alt, Shift, Win.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -201,7 +217,7 @@ export async function transcribeAudioCommand(audioBase64: string, mimeType: stri
     ].filter(Boolean) as string[]),
   );
 
-  let lastErr: unknown;
+  const failures: Array<{ model: string; error: string }> = [];
   for (const model of candidateModels) {
     try {
       const response = await ai.models.generateContent({
@@ -223,11 +239,12 @@ export async function transcribeAudioCommand(audioBase64: string, mimeType: stri
       const text = (response.text ?? '').trim();
       if (text) return text;
     } catch (err) {
-      lastErr = err;
+      failures.push({ model, error: describeError(err) });
+      console.warn(`[ai] transcription with ${model} failed: ${describeError(err)}`);
     }
   }
 
-  if (lastErr) throw lastErr;
+  if (failures.length > 0) throw new GeminiUnavailableError(failures);
   return '';
 }
 
@@ -332,7 +349,7 @@ Rules:
 
   let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
   let usedModel = candidateModels[0];
-  let lastErr: unknown;
+  const failures: Array<{ model: string; error: string }> = [];
 
   for (const model of candidateModels) {
     try {
@@ -355,12 +372,20 @@ Rules:
       usedModel = model;
       break;
     } catch (err) {
-      lastErr = err;
+      failures.push({ model, error: describeError(err) });
+      console.warn(`[ai] command with ${model} failed: ${describeError(err)}`);
     }
   }
 
   if (!response) {
-    throw lastErr instanceof Error ? lastErr : new Error('Gemini API request failed.');
+    throw new GeminiUnavailableError(failures);
+  }
+
+  const warnings: string[] = [];
+  if (failures.length > 0) {
+    warnings.push(
+      `Fell back to ${usedModel} after ${failures.map((f) => `${f.model} failed (${f.error})`).join(', ')}.`,
+    );
   }
 
   const actions: AIActionStep[] = [];
@@ -389,8 +414,8 @@ Rules:
   if (params.speakReply && reply) {
     try {
       spokenAudioBase64 = await synthesizeReplySpeech(reply);
-    } catch {
-      // Optional TTS enhancement
+    } catch (err) {
+      warnings.push(`Spoken reply unavailable (${describeError(err)}).`);
     }
   }
 
@@ -399,5 +424,6 @@ Rules:
     reply,
     actions,
     spokenAudioBase64,
+    ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
   };
 }

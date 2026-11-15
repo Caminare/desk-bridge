@@ -2,6 +2,14 @@ export type HostStatus = 'online' | 'idle' | 'offline';
 
 export type AgentType = 'windows-native' | 'browser-host' | 'virtual-sandbox';
 
+export interface MonitorInfo {
+  index: number;
+  name: string;
+  width: number;
+  height: number;
+  primary: boolean;
+}
+
 export interface HostProfile {
   hostId: string;
   name: string;
@@ -18,6 +26,10 @@ export interface HostProfile {
   cpuUsage?: number;
   memoryUsage?: number;
   connectedControllers?: number;
+  /** Monitors reported by the agent (native agent only). */
+  monitors?: MonitorInfo[];
+  /** Index into `monitors` currently being streamed. */
+  activeMonitor?: number;
 }
 
 export type RemoteInputEvent =
@@ -75,6 +87,11 @@ export type RemoteInputEvent =
       type: 'quality';
       maxWidth: number;
       jpegQuality: number;
+    }
+  | {
+      /** Switch which monitor the agent captures and maps input to. */
+      type: 'monitor';
+      index: number;
     };
 
 export type AIModelProvider = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite' | (string & {});

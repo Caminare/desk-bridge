@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Bot,
   Laptop,
+  LogOut,
   Monitor,
   Moon,
   QrCode,
@@ -14,6 +15,7 @@ import { TouchControlDeck } from './components/TouchControlDeck';
 import { AIAssistantPanel } from './components/AIAssistantPanel';
 import { WindowsHostView } from './components/WindowsHostView';
 import { QrScannerModal } from './components/QrScannerModal';
+import { logout } from './lib/auth';
 
 type ActiveTab = 'fleet' | 'control' | 'assistant' | 'host';
 
@@ -280,14 +282,24 @@ export default function App() {
 
         <footer className="mt-12 pt-6 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
           <span>DeskBridge · Multi-Workstation Remote Access</span>
-          <button
-            type="button"
-            onClick={() => setDarkMode((d) => !d)}
-            className="min-h-[38px] inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-          >
-            {darkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-            <span>{darkMode ? 'Light Theme' : 'Dark Theme'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => logout().then(() => window.location.reload())}
+              className="min-h-[38px] inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign out</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDarkMode((d) => !d)}
+              className="min-h-[38px] inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+            >
+              {darkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+              <span>{darkMode ? 'Light Theme' : 'Dark Theme'}</span>
+            </button>
+          </div>
         </footer>
       </main>
 

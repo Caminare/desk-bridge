@@ -3,6 +3,8 @@ export interface WindowsAgentOptions {
   appUrl: string;
   hostName: string;
   groupLabel: string;
+  /** Server enrollment key embedded in the script; lets the agent register. */
+  enrollKey: string;
 }
 
 export function generatePowerShellHostScript(opts: WindowsAgentOptions): string {
@@ -10,11 +12,15 @@ export function generatePowerShellHostScript(opts: WindowsAgentOptions): string 
   const safeGroup = opts.groupLabel.replace(/'/g, "''");
   const safeWsUrl = opts.wsUrl.replace(/'/g, "''");
   const safeAppUrl = opts.appUrl.replace(/'/g, "''");
+  const safeEnrollKey = opts.enrollKey.replace(/'/g, "''");
 
   return `<#
   DeskBridge Windows Host Agent
   Exposes this Windows PC to your DeskBridge mobile controller over encrypted WebSockets.
   Works natively on Windows 10 / 11 with PowerShell 5.1+ (.NET Framework).
+
+  SECURITY: this script contains your DeskBridge enrollment key. Anyone holding it
+  can register a machine with your relay. Do not share or commit it.
 #>
 
 param(
@@ -22,9 +28,12 @@ param(
   [string]$GroupLabel = '${safeGroup}',
   [string]$RelayWsUrl = '${safeWsUrl}',
   [string]$AppBaseUrl = '${safeAppUrl}',
+  [string]$EnrollKey = '${safeEnrollKey}',
   [int]$FrameIntervalMs = 80,
   [int]$JpegQuality = 62,
-  [int]$MaxStreamWidth = 1152
+  [int]$MaxStreamWidth = 1152,
+  # -1 = primary monitor; otherwise an index into [System.Windows.Forms.Screen]::AllScreens
+  [int]$MonitorIndex = -1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,6 +103,77 @@ public static class DeskBridgeWin32 {
     }
   }
 
+  // ---- SendInput-based keyboard (Unicode text + arbitrary key combos) ----
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+
+  // MOUSEINPUT is the largest member, so including it gives INPUT the size Windows expects on x86 and x64.
+  [StructLayout(LayoutKind.Explicit)]
+  public struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct INPUT { public uint type; public InputUnion u; }
+
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+  public const uint INPUT_KEYBOARD = 1;
+  public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+  public const uint KEYEVENTF_UNICODE = 0x0004;
+
+  static INPUT Key(ushort vk, ushort scan, uint flags) {
+    INPUT i = new INPUT();
+    i.type = INPUT_KEYBOARD;
+    i.u.ki.wVk = vk;
+    i.u.ki.wScan = scan;
+    i.u.ki.dwFlags = flags;
+    return i;
+  }
+
+  static bool IsExtended(ushort vk) {
+    // Navigation cluster, arrows, Insert/Delete, Windows/Apps keys, Divide, NumLock.
+    return (vk >= 0x21 && vk <= 0x28) || vk == 0x2D || vk == 0x2E || vk == 0x5B || vk == 0x5C || vk == 0x5D || vk == 0x6F || vk == 0x90 || vk == 0x2C;
+  }
+
+  static uint Send(System.Collections.Generic.List<INPUT> inputs) {
+    if (inputs.Count == 0) return 0;
+    return SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+  }
+
+  /// Types text exactly (any Unicode, including emoji). LF becomes Enter, TAB becomes Tab, CR is ignored.
+  public static uint TypeUnicode(string text) {
+    var inputs = new System.Collections.Generic.List<INPUT>();
+    foreach (char c in text) {
+      if (c == (char)13) continue;
+      if (c == (char)10 || c == (char)9) {
+        ushort vk = (ushort)(c == (char)10 ? 0x0D : 0x09);
+        inputs.Add(Key(vk, 0, 0));
+        inputs.Add(Key(vk, 0, KEYEVENTF_KEYUP));
+        continue;
+      }
+      inputs.Add(Key(0, (ushort)c, KEYEVENTF_UNICODE));
+      inputs.Add(Key(0, (ushort)c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+    }
+    return Send(inputs);
+  }
+
+  /// Presses modifiers, taps key, releases modifiers in reverse order.
+  public static uint SendCombo(ushort[] modifiers, ushort vk) {
+    var inputs = new System.Collections.Generic.List<INPUT>();
+    foreach (ushort m in modifiers) inputs.Add(Key(m, 0, IsExtended(m) ? KEYEVENTF_EXTENDEDKEY : 0));
+    uint ext = IsExtended(vk) ? KEYEVENTF_EXTENDEDKEY : 0;
+    inputs.Add(Key(vk, 0, ext));
+    inputs.Add(Key(vk, 0, ext | KEYEVENTF_KEYUP));
+    for (int i = modifiers.Length - 1; i >= 0; i--) {
+      ushort m = modifiers[i];
+      inputs.Add(Key(m, 0, (IsExtended(m) ? KEYEVENTF_EXTENDEDKEY : 0) | KEYEVENTF_KEYUP));
+    }
+    return Send(inputs);
+  }
+
   public static string GetActiveWindowTitle() {
     IntPtr handle = GetForegroundWindow();
     var sb = new System.Text.StringBuilder(256);
@@ -116,7 +196,41 @@ if (Test-Path $hostIdFile) {
   $HostId | Out-File -FilePath $hostIdFile -Encoding ascii -NoNewline
 }
 
-$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+# Per-host secret issued by the relay on first registration; proves this machine owns $HostId.
+$hostSecretFile = Join-Path $env:APPDATA "DeskBridge-host-secret.txt"
+$script:HostSecret = ''
+if (Test-Path $hostSecretFile) {
+  $script:HostSecret = (Get-Content $hostSecretFile -Raw).Trim()
+}
+
+# Monitor selection. $bounds/$screenW/$screenH describe the monitor being captured; every
+# coordinate mapping below is relative to $bounds, so switching monitors just swaps them.
+function Get-MonitorList {
+  $all = [System.Windows.Forms.Screen]::AllScreens
+  $list = @()
+  for ($i = 0; $i -lt $all.Length; $i++) {
+    $list += @{
+      index = $i
+      name = $all[$i].DeviceName.Replace([string][char]92, '').Replace('.', '')
+      width = $all[$i].Bounds.Width
+      height = $all[$i].Bounds.Height
+      primary = [bool]$all[$i].Primary
+    }
+  }
+  return ,$list
+}
+
+function Resolve-MonitorIndex([int]$requested) {
+  $all = [System.Windows.Forms.Screen]::AllScreens
+  if ($requested -ge 0 -and $requested -lt $all.Length) { return $requested }
+  for ($i = 0; $i -lt $all.Length; $i++) {
+    if ($all[$i].Primary) { return $i }
+  }
+  return 0
+}
+
+$script:activeMonitor = Resolve-MonitorIndex $MonitorIndex
+$bounds = [System.Windows.Forms.Screen]::AllScreens[$script:activeMonitor].Bounds
 $screenW = $bounds.Width
 $screenH = $bounds.Height
 
@@ -141,6 +255,8 @@ $script:fastEncoderParams = New-Object System.Drawing.Imaging.EncoderParameters(
 $script:fastEncoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]50)
 
 function Update-CaptureConfig([int]$maxW, [int]$quality) {
+  $script:lastMaxW = $maxW
+  $script:lastQuality = $quality
   $q = [Math]::Max(30, [Math]::Min(95, $quality))
   $script:targetQ = $q
   $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$q)
@@ -184,6 +300,68 @@ function Update-CaptureConfig([int]$maxW, [int]$quality) {
 }
 
 Update-CaptureConfig $MaxStreamWidth $JpegQuality
+
+function Select-Monitor([int]$index) {
+  $resolved = Resolve-MonitorIndex $index
+  $script:activeMonitor = $resolved
+  $script:bounds = [System.Windows.Forms.Screen]::AllScreens[$resolved].Bounds
+  $script:screenW = $script:bounds.Width
+  $script:screenH = $script:bounds.Height
+  $capG.Dispose()
+  $capBmp.Dispose()
+  $script:capBmp = New-Object System.Drawing.Bitmap($script:screenW, $script:screenH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+  $script:capG = [System.Drawing.Graphics]::FromImage($script:capBmp)
+  # Force scaled buffers to be rebuilt for the new resolution.
+  $script:targetW = 0
+  $script:fastW = 0
+  Update-CaptureConfig $script:lastMaxW $script:lastQuality
+  $script:monitorChanged = $true
+  Write-Host "Streaming monitor $resolved ($($script:screenW)x$($script:screenH))" -ForegroundColor Cyan
+}
+
+# Virtual-key codes for Send-KeyCombo. PowerShell hashtables are case-insensitive.
+$script:VkMap = @{
+  'Enter' = 0x0D; 'Return' = 0x0D; 'Tab' = 0x09; 'Escape' = 0x1B; 'Esc' = 0x1B; 'Backspace' = 0x08;
+  'Delete' = 0x2E; 'Del' = 0x2E; 'Insert' = 0x2D; 'Ins' = 0x2D; 'Home' = 0x24; 'End' = 0x23;
+  'PageUp' = 0x21; 'PgUp' = 0x21; 'PageDown' = 0x22; 'PgDn' = 0x22; 'Space' = 0x20;
+  'ArrowUp' = 0x26; 'Up' = 0x26; 'ArrowDown' = 0x28; 'Down' = 0x28;
+  'ArrowLeft' = 0x25; 'Left' = 0x25; 'ArrowRight' = 0x27; 'Right' = 0x27;
+  'PrintScreen' = 0x2C; 'PrtSc' = 0x2C; 'Pause' = 0x13; 'CapsLock' = 0x14; 'Menu' = 0x5D; 'Apps' = 0x5D;
+  'VolumeMute' = 0xAD; 'VolumeDown' = 0xAE; 'VolumeUp' = 0xAF;
+  'MediaNext' = 0xB0; 'MediaPrev' = 0xB1; 'MediaPlayPause' = 0xB3;
+  '-' = 0xBD; '=' = 0xBB; '+' = 0xBB; '[' = 0xDB; ']' = 0xDD; ';' = 0xBA; ',' = 0xBC; '.' = 0xBE; '/' = 0xBF
+}
+for ($c = 65; $c -le 90; $c++) { $script:VkMap[[string][char]$c] = $c }
+for ($d = 0; $d -le 9; $d++) { $script:VkMap[[string]$d] = 0x30 + $d }
+for ($f = 1; $f -le 24; $f++) { $script:VkMap["F$f"] = 0x6F + $f }
+$script:ModMap = @{ 'Ctrl' = 0x11; 'Control' = 0x11; 'Alt' = 0x12; 'Shift' = 0x10; 'Win' = 0x5B; 'Meta' = 0x5B; 'Cmd' = 0x5B }
+
+# Sends a combo such as "Ctrl+Shift+T", "Win+E", "Alt+F4" or "F5". Returns $false if unknown.
+function Send-KeyCombo([string]$combo) {
+  if ([string]::IsNullOrWhiteSpace($combo)) { return $false }
+  $parts = @($combo.Split('+') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+  if ($combo.EndsWith('++')) { $parts += '+' }
+  if ($parts.Count -eq 0) { return $false }
+  $keyName = $parts[$parts.Count - 1]
+  $modNames = @()
+  if ($parts.Count -gt 1) { $modNames = $parts[0..($parts.Count - 2)] }
+  $mods = @()
+  foreach ($p in $modNames) {
+    if (-not $script:ModMap.ContainsKey($p)) { Write-Host "Unknown modifier '$p' in '$combo'" -ForegroundColor DarkYellow; return $false }
+    $mods += [uint16]$script:ModMap[$p]
+  }
+  $isWin = $mods -contains [uint16]0x5B
+  # Win+L is handled by the OS secure desktop and cannot be injected; Ctrl+Alt+Del cannot be sent at all.
+  if ($isWin -and $mods.Count -eq 1 -and $keyName -eq 'L') { [DeskBridgeWin32]::LockWorkStation() | Out-Null; return $true }
+  if ($script:ModMap.ContainsKey($keyName)) {
+    $vkOnly = [uint16]$script:ModMap[$keyName]
+    [DeskBridgeWin32]::SendCombo([uint16[]]$mods, $vkOnly) | Out-Null
+    return $true
+  }
+  if (-not $script:VkMap.ContainsKey($keyName)) { Write-Host "Unknown key '$keyName' in '$combo'" -ForegroundColor DarkYellow; return $false }
+  [DeskBridgeWin32]::SendCombo([uint16[]]$mods, [uint16]$script:VkMap[$keyName]) | Out-Null
+  return $true
+}
 
 function Capture-ScreenBinary([bool]$fastMotion) {
   $capG.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
@@ -302,35 +480,29 @@ function Handle-RemoteInput($evt) {
       }
     }
     'type' {
-      $escaped = [System.Text.RegularExpressions.Regex]::Replace([string]$evt.text, '([+^%~(){}\\[\\]])', '{$1}')
-      [System.Windows.Forms.SendKeys]::SendWait($escaped)
+      [DeskBridgeWin32]::TypeUnicode([string]$evt.text) | Out-Null
     }
     'key' {
-      $k = [string]$evt.key
-      $map = @{
-        'Enter' = '{ENTER}'; 'Tab' = '{TAB}'; 'Escape' = '{ESC}'; 'Backspace' = '{BACKSPACE}';
-        'Delete' = '{DELETE}'; 'ArrowUp' = '{UP}'; 'ArrowDown' = '{DOWN}'; 'ArrowLeft' = '{LEFT}'; 'ArrowRight' = '{RIGHT}'
+      $combo = [string]$evt.key
+      if ($null -ne $evt.modifiers -and @($evt.modifiers).Count -gt 0) {
+        $prefix = (@($evt.modifiers) | ForEach-Object {
+          switch ([string]$_) { 'ctrl' { 'Ctrl' } 'alt' { 'Alt' } 'shift' { 'Shift' } 'win' { 'Win' } default { [string]$_ } }
+        }) -join '+'
+        $combo = "$prefix+$combo"
       }
-      if ($map.ContainsKey($k)) {
-        [System.Windows.Forms.SendKeys]::SendWait($map[$k])
-      }
+      Send-KeyCombo $combo | Out-Null
     }
     'hotkey' {
       $combo = [string]$evt.combo
-      switch ($combo) {
-        'Win+D' {
-          [DeskBridgeWin32]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero)
-          [DeskBridgeWin32]::keybd_event(0x44, 0, 0, [UIntPtr]::Zero)
-          [DeskBridgeWin32]::keybd_event(0x44, 0, [DeskBridgeWin32]::KEYEVENTF_KEYUP, [UIntPtr]::Zero)
-          [DeskBridgeWin32]::keybd_event(0x5B, 0, [DeskBridgeWin32]::KEYEVENTF_KEYUP, [UIntPtr]::Zero)
-        }
-        'Win+L' { [DeskBridgeWin32]::LockWorkStation() | Out-Null }
-        'Alt+Tab' { [System.Windows.Forms.SendKeys]::SendWait('%{TAB}') }
-        'Ctrl+C' { [System.Windows.Forms.SendKeys]::SendWait('^c') }
-        'Ctrl+V' { [System.Windows.Forms.SendKeys]::SendWait('^v') }
-        'Ctrl+S' { [System.Windows.Forms.SendKeys]::SendWait('^s') }
-        'Ctrl+Shift+Esc' { Start-Process taskmgr.exe }
+      if ($combo -eq 'Ctrl+Shift+Esc') {
+        # Injected Ctrl+Shift+Esc is unreliable from a non-elevated process; start Task Manager directly.
+        Start-Process taskmgr.exe
+      } else {
+        Send-KeyCombo $combo | Out-Null
       }
+    }
+    'monitor' {
+      Select-Monitor ([int]$evt.index)
     }
     'launch' {
       $target = [string]$evt.target
@@ -359,8 +531,11 @@ Write-Host "  Resolution : \${screenW}x\${screenH}" -ForegroundColor Gray
 Write-Host "=====================================================" -ForegroundColor Cyan
 
 while ($true) {
+  $script:AuthRejected = $false
   $ws = New-Object System.Net.WebSockets.ClientWebSocket
   $ws.Options.SetRequestHeader('ngrok-skip-browser-warning', 'true')
+  # Unsolicited pongs keep the relay heartbeat satisfied even if a ping reply is delayed.
+  $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(10)
   try {
     Write-Host "Connecting to DeskBridge Relay: $RelayWsUrl ..." -ForegroundColor Yellow
     $ws.ConnectAsync([Uri]$RelayWsUrl, [System.Threading.CancellationToken]::None).Wait()
@@ -374,7 +549,11 @@ while ($true) {
         os = [System.Environment]::OSVersion.VersionString
         screenWidth = $screenW
         screenHeight = $screenH
+        monitors = (Get-MonitorList)
+        activeMonitor = $script:activeMonitor
         agentType = 'windows-native'
+        enrollKey = $EnrollKey
+        hostSecret = $script:HostSecret
       }
     }
 
@@ -418,7 +597,14 @@ while ($true) {
           $recvMs.SetLength(0)
           $msg = $jsonSerializer.DeserializeObject($msgText)
 
-          if ($msg.event -eq 'host:registered') {
+          if ($msg.event -eq 'host:auth_error') {
+            Write-Host "Relay rejected this agent: $($msg.payload.error)" -ForegroundColor Red
+            $script:AuthRejected = $true
+          } elseif ($msg.event -eq 'host:registered') {
+            if ($msg.payload.ContainsKey('hostSecret') -and $msg.payload.hostSecret) {
+              $script:HostSecret = [string]$msg.payload.hostSecret
+              $script:HostSecret | Out-File -FilePath $hostSecretFile -Encoding ascii -NoNewline
+            }
             $code = $msg.payload.pairingCode
             $pairUrl = "$AppBaseUrl/?pair=$code&host=$HostId"
             Write-Host ""
@@ -454,7 +640,11 @@ while ($true) {
                 $pendingRelDx = 0
                 $pendingRelDy = 0
               }
-              Handle-RemoteInput $ev
+              try {
+                Handle-RemoteInput $ev
+              } catch {
+                Write-Host "Input '$($ev.type)' failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+              }
               $inputDirty = $true
               if ($ev.type -ne 'quality') {
                 $motionUntil = ([DateTime]::UtcNow).AddMilliseconds(280)
@@ -465,6 +655,21 @@ while ($true) {
           }
         }
         $drained++
+      }
+
+      if ($script:monitorChanged) {
+        $script:monitorChanged = $false
+        Send-WsJson $ws @{
+          event = 'host:update'
+          payload = @{
+            screenWidth = $screenW
+            screenHeight = $screenH
+            activeMonitor = $script:activeMonitor
+            monitors = (Get-MonitorList)
+          }
+        }
+        $lastSig = ''
+        $inputDirty = $true
       }
 
       if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
@@ -504,7 +709,12 @@ while ($true) {
   } finally {
     $ws.Dispose()
   }
-  Start-Sleep -Seconds 4
+  if ($script:AuthRejected) {
+    Write-Host "Retrying in 60s. Re-download the agent from the DeskBridge Host tab if this keeps happening." -ForegroundColor Yellow
+    Start-Sleep -Seconds 60
+  } else {
+    Start-Sleep -Seconds 4
+  }
 }
 `;
 }
@@ -521,14 +731,47 @@ pause
 export function generateNodeHostScript(opts: WindowsAgentOptions): string {
   return `// DeskBridge Cross-Platform Node.js Host Agent (Node 22+)
 // Run: node deskbridge-host.mjs
+// SECURITY: this file contains your DeskBridge enrollment key. Do not share or commit it.
 import os from 'node:os';
-import { exec } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { exec, execFile } from 'node:child_process';
 
 const RELAY_WS_URL = ${JSON.stringify(opts.wsUrl)};
 const APP_URL = ${JSON.stringify(opts.appUrl)};
 const HOST_NAME = process.env.DESKBRIDGE_NAME || ${JSON.stringify(opts.hostName)};
 const GROUP_LABEL = process.env.DESKBRIDGE_GROUP || ${JSON.stringify(opts.groupLabel)};
+const ENROLL_KEY = ${JSON.stringify(opts.enrollKey)};
 const HOST_ID = 'node-' + os.hostname().toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
+const SECRET_FILE = path.join(os.homedir(), '.deskbridge-host.json');
+
+function loadHostSecret() {
+  try {
+    const data = JSON.parse(fs.readFileSync(SECRET_FILE, 'utf8'));
+    return data.hostId === HOST_ID ? String(data.hostSecret || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function saveHostSecret(secret) {
+  fs.writeFileSync(SECRET_FILE, JSON.stringify({ hostId: HOST_ID, hostSecret: secret }), { mode: 0o600 });
+}
+
+// Open a file, app or URL without passing the target through a shell.
+function launchTarget(target) {
+  if (process.platform === 'win32') {
+    execFile('powershell.exe', ['-NoProfile', '-Command', 'Start-Process -FilePath $env:DESKBRIDGE_TARGET'], {
+      env: { ...process.env, DESKBRIDGE_TARGET: target },
+    });
+  } else if (process.platform === 'darwin') {
+    execFile('open', [target]);
+  } else {
+    execFile('xdg-open', [target]);
+  }
+}
+
+let retryDelayMs = 4000;
 
 function connect() {
   const ws = new WebSocket(RELAY_WS_URL);
@@ -543,21 +786,27 @@ function connect() {
         screenWidth: 1920,
         screenHeight: 1080,
         agentType: 'windows-native',
+        enrollKey: ENROLL_KEY,
+        hostSecret: loadHostSecret(),
       },
     }));
   });
 
   ws.addEventListener('message', (evt) => {
     const msg = JSON.parse(String(evt.data));
-    if (msg.event === 'host:registered') {
+    if (msg.event === 'host:auth_error') {
+      console.error(\`[DeskBridge] Relay rejected this agent: \${msg.payload.error}\`);
+      retryDelayMs = 60000;
+    } else if (msg.event === 'host:registered') {
+      retryDelayMs = 4000;
+      if (msg.payload.hostSecret) saveHostSecret(msg.payload.hostSecret);
       console.log(\`[DeskBridge] Paired Host Ready: \${HOST_NAME}\`);
       console.log(\`[DeskBridge] Pairing Code: \${msg.payload.pairingCode}\`);
       console.log(\`[DeskBridge] Pair URL: \${APP_URL}/?pair=\${msg.payload.pairingCode}&host=\${HOST_ID}\`);
     } else if (msg.event === 'client:input') {
       const input = msg.payload;
       if (input.type === 'launch' && input.target) {
-        const cmd = process.platform === 'win32' ? \`start "" "\${input.target}"\` : \`open "\${input.target}"\`;
-        exec(cmd);
+        launchTarget(String(input.target));
       } else if (input.type === 'shell' && input.command) {
         exec(input.command, (err, stdout, stderr) => {
           console.log('[Shell]', stdout || stderr || err?.message || 'done');
@@ -567,8 +816,8 @@ function connect() {
   });
 
   ws.addEventListener('close', () => {
-    console.log('[DeskBridge] Disconnected. Reconnecting in 4s...');
-    setTimeout(connect, 4000);
+    console.log(\`[DeskBridge] Disconnected. Reconnecting in \${retryDelayMs / 1000}s...\`);
+    setTimeout(connect, retryDelayMs);
   });
 }
 
