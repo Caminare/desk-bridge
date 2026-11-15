@@ -1,5 +1,6 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { encodeFrame as encodeFrameV, parseFrame } from '../src/lib/frameProtocol.js';
 import {
   TestSocket,
   decodeFrameMeta,
@@ -307,5 +308,105 @@ describe('AI routes', () => {
     const limited = await call();
     assert.equal(limited.status, 429);
     assert.ok(Number(limited.headers.get('retry-after')) > 0);
+  });
+});
+
+describe('tiled (v2) frames, keyframes and adaptive quality', () => {
+  let t: TestRelay;
+  let cookie: string;
+  let enrollKey: string;
+  const sockets: TestSocket[] = [];
+  const tile = (x: number, y: number, n = 1) => ({ x, y, w: 64, h: 64, data: new Uint8Array(n).fill(9) });
+  const key = (seq: number, extra: Record<string, unknown> = {}) =>
+    Buffer.from(encodeFrameV(2, { hostId: 'v2', seq, w: 128, h: 64, key: true, ...extra }, [{ x: 0, y: 0, w: 128, h: 64, data: new Uint8Array([1, 2]) }]));
+  const delta = (seq: number, extra: Record<string, unknown> = {}) =>
+    Buffer.from(encodeFrameV(2, { hostId: 'v2', seq, w: 128, h: 64, key: false, ...extra }, [tile(64, 0)]));
+
+  async function setup(hostId: string) {
+    const h = await TestSocket.open(t.wsUrl);
+    sockets.push(h);
+    h.send('host:register', { hostId, enrollKey, agentType: 'windows-native' });
+    await h.until((s) => Boolean(s.event('host:registered')), 2000, 'registered');
+    const c = await TestSocket.open(t.wsUrl, { headers: { cookie, origin: t.base } });
+    sockets.push(c);
+    c.send('client:pair', { hostId });
+    await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
+    return { h, c };
+  }
+
+  before(async () => {
+    t = await startTestRelay();
+    cookie = await loginCookie(t.base);
+    enrollKey = await getEnrollKey(t.base, cookie);
+  });
+  after(async () => {
+    sockets.forEach((s) => s.close());
+    await t.stop();
+  });
+
+  test('pairing requests a keyframe and withholds deltas until it arrives', async () => {
+    const { h, c } = await setup('v2-a');
+    await h.until((s) => s.messages.some((m) => m.event === 'host:keyframe_request'), 2000, 'keyframe request');
+
+    h.ws.send(delta(1));
+    await h.until((s) => s.messages.some((m) => m.event === 'host:frame_ack' && m.payload.seq === 1), 2000, 'relay ack');
+    assert.equal(c.binaries.length, 0, 'delta withheld before keyframe');
+    assert.equal(h.messages.find((m) => m.event === 'host:frame_ack' && m.payload.seq === 1)!.payload.relay, true);
+
+    h.ws.send(key(2));
+    h.ws.send(delta(3));
+    await c.until((s) => s.binaries.length === 2, 2000, 'keyframe + delta');
+    const frames = c.binaries.map((b) => parseFrame(b)!);
+    assert.deepEqual(frames.map((f) => [f.header.seq, f.isKey]), [[2, true], [3, false]]);
+    assert.equal(frames[0].header.hostId, 'v2-a', 'hostId rewritten to the registered host');
+  });
+
+  test('controller keyframe requests are forwarded (throttled)', async () => {
+    const { h, c } = await setup('v2-b');
+    await sleep(350);
+    const before = h.messages.filter((m) => m.event === 'host:keyframe_request').length;
+    c.send('client:keyframe_request', { hostId: 'v2-b' });
+    c.send('client:keyframe_request', { hostId: 'v2-b' });
+    await h.until((s) => s.messages.filter((m) => m.event === 'host:keyframe_request').length > before, 2000, 'forwarded');
+    await sleep(100);
+    assert.equal(h.messages.filter((m) => m.event === 'host:keyframe_request').length, before + 1, 'throttled');
+  });
+
+  test('a full-frame keyframe becomes the cached image for new controllers', async () => {
+    const { h } = await setup('v2-c');
+    h.ws.send(key(1));
+    await sleep(100);
+    const c2 = await TestSocket.open(t.wsUrl, { headers: { cookie, origin: t.base } });
+    sockets.push(c2);
+    c2.send('client:pair', { hostId: 'v2-c' });
+    await c2.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
+    assert.equal(c2.event('client:paired')!.payload.latestFrame, 'data:image/jpeg;base64,AQI=');
+  });
+
+  test('high RTT reported by the agent lowers quality; the user preset caps it', async () => {
+    const { h, c } = await setup('v2-d');
+    h.ws.send(key(1, { stats: { rtt: 900 } }));
+    await h.until((s) => s.messages.some((m) => m.event === 'client:input' && m.payload.type === 'quality'), 2000, 'quality down');
+    const down = h.messages.filter((m) => m.event === 'client:input' && m.payload.type === 'quality').at(-1)!.payload;
+    assert.ok(down.maxWidth < 1152, `stepped below default (${down.maxWidth})`);
+
+    c.send('client:input', { hostId: 'v2-d', input: { type: 'quality', maxWidth: 1600, jpegQuality: 78 } });
+    await h.until(
+      (s) => s.messages.some((m) => m.event === 'client:input' && m.payload.type === 'quality' && m.payload.maxWidth === 1600),
+      2000,
+      'preset applied',
+    );
+    const applied = h.messages.filter((m) => m.event === 'client:input' && m.payload.type === 'quality').at(-1)!.payload;
+    assert.equal(applied.jpegQuality, 75, 'mapped onto the ladder');
+  });
+
+  test('malformed v2 frames are dropped', async () => {
+    const { h, c } = await setup('v2-e');
+    h.ws.send(key(1));
+    await c.until((s) => s.binaries.length === 1, 2000, 'keyframe');
+    const bad = Buffer.from(encodeFrameV(2, { seq: 2, w: 64, h: 64 }, [{ x: 32, y: 0, w: 64, h: 64, data: new Uint8Array([1]) }]));
+    h.ws.send(bad);
+    await sleep(150);
+    assert.equal(c.binaries.length, 1);
   });
 });
