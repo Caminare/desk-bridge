@@ -15,6 +15,9 @@ DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse,
 | `server.ts` | Entry point: reads env and calls `createRelay()`. Keep it thin. |
 | `server/relay.ts` | `createRelay(options)`: Express + `ws` relay (REST API, WebSocket routing, host registry, heartbeat, Vite middleware or static `dist/`). All state is per instance, so tests can run several relays. |
 | `server/rateLimit.ts` | Sliding-window limiter (used for `/api/ai/*`). |
+| `server/adaptiveStream.ts` | Adaptive stream quality: steps resolution/JPEG quality down when agent-reported RTT grows, back up when calm, capped by the user preset. |
+| `src/lib/frameProtocol.ts` | Binary frame codec (v1 full JPEG, v2 tiled) shared by relay, client and tests. |
+| `src/lib/frameCompositor.ts` | Per-host off-DOM canvas compositor: off-main-thread tile decode, in-order apply, keyframe resync, stats. |
 | `server/auth.ts` | Owner access token, signed session cookies, enrollment key, per-host secrets, origin check, login rate limiter. |
 | `server/aiAssistant.ts` | Gemini calls: transcription, function-calling (desktop actions), optional TTS. Server-side only. |
 | `server/windowsAgentGenerator.ts` | Generates the PowerShell agent (`DeskBridge-Host.ps1`), `.bat` launcher and Node agent (`deskbridge-host.mjs`) as template strings. |
@@ -23,6 +26,7 @@ DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse,
 | `src/hooks/useDeskBridgeSocket.ts` | Controller WebSocket client: fleet state, pairing, frame decoding, input sending. |
 | `src/lib/auth.ts` | `apiFetch` (use it for all `/api` calls), login/logout, unauthorized event. |
 | `src/components/` | UI. `TouchControlDeck.tsx` (gesture handling + layout) composes `controlDeck/*` (`StreamViewport`, `TrackpadPanel`, `KeyboardDrawer`, `FullscreenHud`, `HostChips`, `MobileAIDrawer`, `qualityPresets`). `WindowsHostView.tsx` (browser host mode) composes `hostView/*` (`PairingPanel`, `AgentDownloadCard`). Also `AIAssistantPanel.tsx`, `FleetView.tsx`, `QrScannerModal.tsx`, `LoginScreen.tsx`, `AuthGate.tsx`. |
+| `src/components/LiveStreamCanvas.tsx` | Displays a host's composited canvas (rAF-coalesced, no React state per frame). |
 | `src/hooks/useCoalescedPointerInput.ts` | Batches relative mouse moves (16ms) and scroll deltas (24ms) before sending. |
 | `src/lib/streamCoords.ts` | Pointer → normalized remote coordinates, accounting for `object-contain` letterboxing. |
 | `src/lib/virtualDesktop.ts` | Pure model + canvas drawing for the simulated desktop in browser host mode. |
@@ -71,15 +75,22 @@ If you change dependencies, run `bun install` so `bun.lock` stays in sync. CI us
 All WebSocket traffic goes over `/ws`. JSON messages are `{ event, payload }`.
 
 - **Host → relay**: `host:register` (needs `enrollKey`, plus `hostSecret` after first enrollment, unless the socket has an owner session; may include `monitors` and `activeMonitor`), `host:update` (screen size / monitor changes, validated by `sanitizeMonitors`), `host:frame` (JSON data-URL frame, browser host), `host:regenerate_code`.
-- **Binary frames (host → relay → controllers)**: `0x44 0x01`, a big-endian `uint16` header length, a UTF-8 JSON header (`hostId`, `seq`, `activeWindow`, `timestamp`), then the JPEG bytes. The relay rewrites `hostId` to the socket's registered host.
-- **Relay → host**: `host:registered` (may include a one-time `hostSecret`), `host:auth_error`, `host:controller_count`, `host:frame_ack`, `client:input`.
-- **Controller → relay** (owner session required): `client:subscribe_fleet`, `client:pair`, `client:unpair`, `client:input`, `client:frame_ack`.
+- **Binary frames (host → relay → controllers)**: `0x44`, a version byte, a big-endian `uint16` header length, a UTF-8 JSON header, then the payload (see `src/lib/frameProtocol.ts`). The relay rewrites `hostId` to the socket's registered host.
+  - **v1 (`0x01`)**: header `hostId`, `seq`, `activeWindow`, `timestamp`; payload is one full-frame JPEG. Used by older agents.
+  - **v2 (`0x02`)**: also `w`, `h` (stream size), `key` (keyframe), `r` (flat `[x, y, w, h, byteLength]` per tile) and `stats` (agent `cap`/`enc` ms, `rtt` ms, upload `kbps`, `q`, `mw`, changed/total tiles `ch`/`tt`, in-flight `inf`). The payload is the tiles' JPEGs concatenated. Deltas only make sense on top of the previous frame.
+- **Relay → host**: `host:registered` (may include a one-time `hostSecret`), `host:auth_error`, `host:controller_count`, `host:frame_ack` (`relay: true` when the relay acked a frame no controller received), `host:keyframe_request`, `client:input` (including relay-generated adaptive `quality`).
+- **Controller → relay** (owner session required): `client:subscribe_fleet`, `client:pair`, `client:unpair`, `client:input`, `client:frame_ack`, `client:keyframe_request`.
 - **Relay → controller**: `fleet:update`, `client:paired`, `client:pair_error`, `host:frame`, `host:status`, `auth:required`.
 - **Close codes**: `4401` authentication failed, `4409` host replaced by a newer connection, `1009` message too big (limit 8 MB).
 
 Input events (`RemoteInputEvent`): `mousemove`, `click`, `mousedown`/`mouseup`, `scroll`, `type` (any Unicode; `\n` = Enter), `key` (`key` plus optional `modifiers`), `hotkey` (combo string such as `Ctrl+Shift+T`), `launch`, `shell`, `clipboard`, `quality`, `monitor`.
 
-Flow control: hosts keep at most about 2 unacknowledged frames in flight, and the relay drops frames for controllers whose `bufferedAmount` is high. Preserve both mechanisms when touching streaming code.
+### Streaming pipeline (keep these properties when changing it)
+
+- **Agent**: `DeskBridgeStreamer` (C#, background thread) captures, scales and diffs 64×64 tiles against the last frame *handed to the sender*, then JPEG-encodes changed runs. A keyframe is sent on request, after a resize or monitor switch, or when more than 50% changed. A single-slot mailbox holds the freshest unsent frame, and a generation counter discards frames diffed against an outdated reference. The PowerShell loop only applies input, paces and sends asynchronously (at most `-MaxInFlight` unacked frames, default 4, with a 1.5 s stall escape).
+- **Relay**: never forwards a v2 delta to a controller that is not in sync. That covers controllers just paired and ones skipped because `bufferedAmount` ≥ 512 KB, which are tracked in `entry.needsKey`; the relay asks the agent for a keyframe (throttled to 300 ms). Frames delivered to nobody are acked by the relay. A user `quality` input sets the adaptive ceiling, and the relay sends the agent the effective level.
+- **Controller**: frames go to `FrameStore`/`HostFrameCompositor`, not React state. It decodes with `createImageBitmap`, applies in order, skips deltas while out of sync (and requests a keyframe on decode errors), and **acks only after drawing**. Thumbnails (`framesByHost`) are canvas snapshots every 2 s. The AI assistant gets a fresh `toDataUrl()` screenshot.
+- Browser host mode still sends JSON `host:frame` data URLs, which the compositor treats as full frames.
 
 If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`, the PowerShell `Handle-RemoteInput` switch, `applyVirtualInput` in `src/lib/virtualDesktop.ts` (browser host), and (if relevant) the Gemini tool declarations.
 
@@ -114,6 +125,8 @@ If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`
 
 ## Known gaps / roadmap
 
+- Streaming is still JPEG (tiled). A real video codec (H.264 via WebRTC, or a native encoder in the agent) would cut bandwidth much further for full-screen motion such as video or scrolling.
+- The relay's backlog-skip path (`bufferedAmount`) is not covered by tests, because it needs a deliberately slow socket.
 - There are no UI tests, and the PowerShell agent has no automated runtime tests (no Windows runner).
 - `Win+L` is mapped to `LockWorkStation()`, and `Ctrl+Alt+Del` cannot be injected at all (secure attention sequence).
 - An agent running unelevated cannot send input to elevated windows (UIPI).
