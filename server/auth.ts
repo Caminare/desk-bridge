@@ -37,7 +37,10 @@ function randomSecret(bytes = 24): string {
   return crypto.randomBytes(bytes).toString('base64url');
 }
 
-export function loadAuthConfig(storePath: string): AuthConfig {
+export function loadAuthConfig(
+  storePath: string,
+  configuredToken: string | undefined = process.env.DESKBRIDGE_ACCESS_TOKEN,
+): AuthConfig {
   let store: Partial<AuthStore> = {};
   try {
     if (fs.existsSync(storePath)) {
@@ -47,7 +50,7 @@ export function loadAuthConfig(storePath: string): AuthConfig {
     console.warn('Could not read auth store, regenerating secrets:', err);
   }
 
-  const envToken = (process.env.DESKBRIDGE_ACCESS_TOKEN || '').trim();
+  const envToken = (configuredToken || '').trim();
   if (envToken && envToken.length < MIN_TOKEN_LENGTH) {
     throw new Error(`DESKBRIDGE_ACCESS_TOKEN must be at least ${MIN_TOKEN_LENGTH} characters long.`);
   }

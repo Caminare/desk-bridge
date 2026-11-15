@@ -376,6 +376,8 @@ while ($true) {
   $script:AuthRejected = $false
   $ws = New-Object System.Net.WebSockets.ClientWebSocket
   $ws.Options.SetRequestHeader('ngrok-skip-browser-warning', 'true')
+  # Unsolicited pongs keep the relay heartbeat satisfied even if a ping reply is delayed.
+  $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(10)
   try {
     Write-Host "Connecting to DeskBridge Relay: $RelayWsUrl ..." -ForegroundColor Yellow
     $ws.ConnectAsync([Uri]$RelayWsUrl, [System.Threading.CancellationToken]::None).Wait()
