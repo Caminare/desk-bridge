@@ -299,17 +299,20 @@ async function startServer() {
         return;
       }
 
-      const transcript = await transcribeAudioCommand(audioBase64, mimeType || 'audio/webm');
-      if (!transcript) {
-        res.status(422).json({ error: 'Could not detect clear speech in the recording. Please try again.' });
-        return;
+      let transcript = '';
+      try {
+        transcript = await transcribeAudioCommand(audioBase64, mimeType || 'audio/webm');
+      } catch {
+        // Fallback: pass raw audio directly to multimodal command processor
       }
 
       const activeEntry = hostId ? hosts.get(hostId) : undefined;
       const frame = screenshotBase64 || activeEntry?.latestFrame;
 
       const result = await processAssistantCommand({
-        prompt: transcript,
+        prompt: transcript || undefined,
+        audioBase64: transcript ? undefined : audioBase64,
+        audioMimeType: transcript ? undefined : mimeType || 'audio/webm',
         thinkingMode: thinkingMode || 'fast',
         activeHost: activeEntry?.profile,
         availableHosts: getPublicHostsList(),
@@ -319,7 +322,7 @@ async function startServer() {
 
       res.json({
         ...result,
-        transcript,
+        transcript: transcript || 'Voice command',
       });
     } catch (err) {
       const message = (err as Error).message || 'Failed to transcribe or execute voice command.';
@@ -449,14 +452,16 @@ async function startServer() {
           entry.profile.memoryUsage = payload.memoryUsage;
         }
         for (const ctrl of entry.controllers) {
-          sendJson(ctrl, 'host:frame', {
-            hostId,
-            frame,
-            activeWindow: entry.profile.activeWindow,
-            cpuUsage: entry.profile.cpuUsage,
-            memoryUsage: entry.profile.memoryUsage,
-            timestamp: payload.timestamp || Date.now(),
-          });
+          if (ctrl.readyState === WebSocket.OPEN && ctrl.bufferedAmount < 512 * 1024) {
+            sendJson(ctrl, 'host:frame', {
+              hostId,
+              frame,
+              activeWindow: entry.profile.activeWindow,
+              cpuUsage: entry.profile.cpuUsage,
+              memoryUsage: entry.profile.memoryUsage,
+              timestamp: payload.timestamp || Date.now(),
+            });
+          }
         }
         return;
       }

@@ -191,24 +191,44 @@ function formatActionLabel(name: AIActionName, args: Record<string, unknown>): s
 export async function transcribeAudioCommand(audioBase64: string, mimeType: string): Promise<string> {
   const ai = getGeminiClient();
   const cleanBase64 = audioBase64.includes(',') ? audioBase64.split(',')[1] : audioBase64;
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.5-transcribe',
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            mimeType: mimeType || 'audio/webm',
-            data: cleanBase64,
-          },
-        },
-        {
-          text: 'Transcribe this voice command for controlling a Windows computer accurately. Output only the spoken command text.',
-        },
-      ],
-    },
-  });
+  const candidateModels = Array.from(
+    new Set([
+      process.env.GEMINI_TRANSCRIBE_MODEL,
+      'gemini-3.5-transcribe',
+      process.env.GEMINI_MODEL,
+      'gemini-4-hydrogen',
+      'gemini-3.1-flash-lite',
+    ].filter(Boolean) as string[]),
+  );
 
-  return (response.text ?? '').trim();
+  let lastErr: unknown;
+  for (const model of candidateModels) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType: mimeType || 'audio/webm',
+                data: cleanBase64,
+              },
+            },
+            {
+              text: 'Transcribe this voice command for controlling a Windows computer accurately. Output only the spoken command text.',
+            },
+          ],
+        },
+      });
+      const text = (response.text ?? '').trim();
+      if (text) return text;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  return '';
 }
 
 export async function synthesizeReplySpeech(text: string): Promise<string | undefined> {
@@ -245,7 +265,9 @@ export async function synthesizeReplySpeech(text: string): Promise<string | unde
 }
 
 export async function processAssistantCommand(params: {
-  prompt: string;
+  prompt?: string;
+  audioBase64?: string;
+  audioMimeType?: string;
   thinkingMode?: AIThinkingMode;
   activeHost?: HostProfile;
   availableHosts: HostProfile[];
@@ -287,19 +309,59 @@ Rules:
     });
   }
 
-  parts.push({ text: params.prompt });
+  if (params.audioBase64) {
+    const cleanAudio = params.audioBase64.includes(',')
+      ? params.audioBase64.split(',')[1]
+      : params.audioBase64;
+    parts.push({
+      inlineData: {
+        mimeType: params.audioMimeType || 'audio/webm',
+        data: cleanAudio,
+      },
+    });
+  }
+
+  parts.push({
+    text: params.prompt || 'Listen to the attached voice command and execute the requested Windows desktop action.',
+  });
 
   const thinkingLevel = params.thinkingMode === 'deep' ? ThinkingLevel.HIGH : ThinkingLevel.LOW;
+  const candidateModels = Array.from(
+    new Set([process.env.GEMINI_MODEL, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'].filter(Boolean) as string[]),
+  );
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: { parts },
-    config: {
-      systemInstruction,
-      thinkingConfig: { thinkingLevel },
-      tools: [{ functionDeclarations: computerControlTools }],
-    },
-  });
+  let response: Awaited<ReturnType<typeof ai.models.generateContent>> | undefined;
+  let usedModel = candidateModels[0];
+  let lastErr: unknown;
+
+  for (const model of candidateModels) {
+    try {
+      const config =
+        model === 'gemini-4-hydrogen'
+          ? {
+              systemInstruction,
+              thinkingConfig: { thinkingLevel },
+              tools: [{ functionDeclarations: computerControlTools }],
+            }
+          : {
+              systemInstruction,
+              tools: [{ functionDeclarations: computerControlTools }],
+            };
+      response = await ai.models.generateContent({
+        model,
+        contents: { parts },
+        config,
+      });
+      usedModel = model;
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (!response) {
+    throw lastErr instanceof Error ? lastErr : new Error('Gemini API request failed.');
+  }
 
   const actions: AIActionStep[] = [];
   if (response.functionCalls && response.functionCalls.length > 0) {
@@ -333,7 +395,7 @@ Rules:
   }
 
   return {
-    model: 'gemini-4-hydrogen',
+    model: usedModel,
     reply,
     actions,
     spokenAudioBase64,

@@ -72,7 +72,7 @@ export type RemoteInputEvent =
       text: string;
     };
 
-export type AIModelProvider = 'gemini-4-hydrogen';
+export type AIModelProvider = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite' | (string & {});
 
 export type AIThinkingMode = 'fast' | 'deep';
 

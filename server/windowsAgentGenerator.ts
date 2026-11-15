@@ -22,8 +22,8 @@ param(
   [string]$GroupLabel = '${safeGroup}',
   [string]$RelayWsUrl = '${safeWsUrl}',
   [string]$AppBaseUrl = '${safeAppUrl}',
-  [int]$FrameIntervalMs = 250,
-  [int]$JpegQuality = 55
+  [int]$FrameIntervalMs = 130,
+  [int]$JpegQuality = 48
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +50,9 @@ public static class DeskBridgeWin32 {
   public static extern bool LockWorkStation();
 
   [DllImport("user32.dll")]
+  public static extern bool SetProcessDPIAware();
+
+  [DllImport("user32.dll")]
   public static extern IntPtr GetForegroundWindow();
 
   [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -57,8 +60,8 @@ public static class DeskBridgeWin32 {
 
   public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
   public const uint MOUSEEVENTF_LEFTUP = 0x0004;
-  public static uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
-  public static uint MOUSEEVENTF_RIGHTUP = 0x0010;
+  public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+  public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
   public const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
   public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
   public const uint MOUSEEVENTF_WHEEL = 0x0800;
@@ -72,6 +75,8 @@ public static class DeskBridgeWin32 {
   }
 }
 "@
+
+[DeskBridgeWin32]::SetProcessDPIAware() | Out-Null
 
 $jsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 $jsonSerializer.MaxJsonLength = 10485760
@@ -92,27 +97,22 @@ $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where
 $encoderParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
 $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$JpegQuality)
 
+$targetW = [Math]::Min(1024, $screenW)
+$targetH = [int]([Math]::Round($screenH * ($targetW / $screenW)))
+$capBmp = New-Object System.Drawing.Bitmap($screenW, $screenH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+$capG = [System.Drawing.Graphics]::FromImage($capBmp)
+$scaledBmp = New-Object System.Drawing.Bitmap($targetW, $targetH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+$scaledG = [System.Drawing.Graphics]::FromImage($scaledBmp)
+$scaledG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Low
+$scaledG.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
+$capMs = New-Object System.IO.MemoryStream
+
 function Capture-ScreenBase64 {
-  $bmp = New-Object System.Drawing.Bitmap($screenW, $screenH)
-  $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-
-  $targetW = [Math]::Min(1280, $screenW)
-  $targetH = [int]([Math]::Round($screenH * ($targetW / $screenW)))
-  $scaled = New-Object System.Drawing.Bitmap($targetW, $targetH)
-  $sg = [System.Drawing.Graphics]::FromImage($scaled)
-  $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
-  $sg.DrawImage($bmp, 0, 0, $targetW, $targetH)
-
-  $ms = New-Object System.IO.MemoryStream
-  $scaled.Save($ms, $jpegCodec, $encoderParams)
-  $b64 = [Convert]::ToBase64String($ms.ToArray())
-
-  $ms.Dispose()
-  $sg.Dispose()
-  $scaled.Dispose()
-  $g.Dispose()
-  $bmp.Dispose()
+  $capG.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+  $scaledG.DrawImage($capBmp, 0, 0, $targetW, $targetH)
+  $capMs.SetLength(0)
+  $scaledBmp.Save($capMs, $jpegCodec, $encoderParams)
+  $b64 = [Convert]::ToBase64String($capMs.GetBuffer(), 0, [int]$capMs.Length)
   return "data:image/jpeg;base64,$b64"
 }
 
@@ -151,7 +151,7 @@ function Handle-RemoteInput($evt) {
         for ($i = 0; $i -lt $count; $i++) {
           [DeskBridgeWin32]::mouse_event([DeskBridgeWin32]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
           [DeskBridgeWin32]::mouse_event([DeskBridgeWin32]::MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
-          Start-Sleep -Milliseconds 40
+          if ($count -gt 1 -and $i -eq 0) { Start-Sleep -Milliseconds 25 }
         }
       }
     }
@@ -232,37 +232,75 @@ while ($true) {
     }
 
     $buffer = New-Object byte[] 65536
+    $recvMs = New-Object System.IO.MemoryStream
     $lastFrame = [DateTime]::MinValue
     $controllers = 0
 
     $recvTask = $null
-    while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
-      if ($null -eq $recvTask) {
-        $seg = New-Object System.ArraySegment[byte]($buffer, 0, $buffer.Length)
-        $recvTask = $ws.ReceiveAsync($seg, [System.Threading.CancellationToken]::None)
-      }
+    $shouldClose = $false
+    while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open -and -not $shouldClose) {
+      $drained = 0
+      $pendingRelDx = 0
+      $pendingRelDy = 0
 
-      if ($recvTask.IsCompleted) {
+      while ($drained -lt 60) {
+        if ($null -eq $recvTask) {
+          $seg = New-Object System.ArraySegment[byte]($buffer, 0, $buffer.Length)
+          $recvTask = $ws.ReceiveAsync($seg, [System.Threading.CancellationToken]::None)
+        }
+        $waitMs = if ($drained -eq 0) { 3 } else { 0 }
+        if (-not $recvTask.Wait($waitMs)) {
+          break
+        }
         $result = $recvTask.Result
         $recvTask = $null
-        if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { break }
-        $msgText = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
-        $msg = $jsonSerializer.DeserializeObject($msgText)
-
-        if ($msg.event -eq 'host:registered') {
-          $code = $msg.payload.pairingCode
-          $pairUrl = "$AppBaseUrl/?pair=$code&host=$HostId"
-          Write-Host ""
-          Write-Host "  ONLINE & READY TO PAIR" -ForegroundColor Green
-          Write-Host "  Pairing Code : $code" -ForegroundColor Cyan
-          Write-Host "  Pair Link    : $pairUrl" -ForegroundColor White
-          Write-Host "  Scan QR inside the DeskBridge Host Console or enter code $code on your phone." -ForegroundColor Gray
-          Write-Host ""
-        } elseif ($msg.event -eq 'host:controller_count') {
-          $controllers = [int]$msg.payload.count
-        } elseif ($msg.event -eq 'client:input') {
-          Handle-RemoteInput $msg.payload
+        if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+          $shouldClose = $true
+          break
         }
+        $recvMs.Write($buffer, 0, $result.Count)
+        if ($result.EndOfMessage) {
+          $msgText = [System.Text.Encoding]::UTF8.GetString($recvMs.GetBuffer(), 0, [int]$recvMs.Length)
+          $recvMs.SetLength(0)
+          $msg = $jsonSerializer.DeserializeObject($msgText)
+
+          if ($msg.event -eq 'host:registered') {
+            $code = $msg.payload.pairingCode
+            $pairUrl = "$AppBaseUrl/?pair=$code&host=$HostId"
+            Write-Host ""
+            Write-Host "  ONLINE & READY TO PAIR" -ForegroundColor Green
+            Write-Host "  Pairing Code : $code" -ForegroundColor Cyan
+            Write-Host "  Pair Link    : $pairUrl" -ForegroundColor White
+            Write-Host "  Scan QR inside the DeskBridge Host Console or enter code $code on your phone." -ForegroundColor Gray
+            Write-Host ""
+          } elseif ($msg.event -eq 'host:controller_count') {
+            $controllers = [int]$msg.payload.count
+          } elseif ($msg.event -eq 'client:input') {
+            $ev = $msg.payload
+            if ($ev.type -eq 'mousemove' -and $ev.relative -eq $true) {
+              $pendingRelDx += [int]$ev.dx
+              $pendingRelDy += [int]$ev.dy
+            } else {
+              if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
+                $pos = [System.Windows.Forms.Cursor]::Position
+                $nx = [Math]::Max(0, [Math]::Min($screenW - 1, $pos.X + $pendingRelDx))
+                $ny = [Math]::Max(0, [Math]::Min($screenH - 1, $pos.Y + $pendingRelDy))
+                [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
+                $pendingRelDx = 0
+                $pendingRelDy = 0
+              }
+              Handle-RemoteInput $ev
+            }
+          }
+        }
+        $drained++
+      }
+
+      if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
+        $pos = [System.Windows.Forms.Cursor]::Position
+        $nx = [Math]::Max(0, [Math]::Min($screenW - 1, $pos.X + $pendingRelDx))
+        $ny = [Math]::Max(0, [Math]::Min($screenH - 1, $pos.Y + $pendingRelDy))
+        [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
       }
 
       $now = [DateTime]::UtcNow
@@ -280,7 +318,6 @@ while ($true) {
         }
         $lastFrame = $now
       }
-      Start-Sleep -Milliseconds 25
     }
   } catch {
     Write-Host "Connection interrupted: $($_.Exception.Message). Reconnecting in 4s..." -ForegroundColor Red
