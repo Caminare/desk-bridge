@@ -17,6 +17,8 @@ import {
   transcribeAudioCommand,
 } from './aiAssistant.js';
 import { SlidingWindowLimiter } from './rateLimit.js';
+import { AdaptiveQuality } from './adaptiveStream.js';
+import { parseFrame, rewriteFrameHeader } from '../src/lib/frameProtocol.js';
 import {
   LoginRateLimiter,
   buildClearedSessionCookie,
@@ -104,7 +106,19 @@ interface HostConnection {
   latestJpeg?: Buffer;
   /** SHA-256 of the per-host secret issued to native agents. Never sent to clients. */
   secretHash?: string;
+  /**
+   * Controllers that must not receive tiled (v2) delta frames until the next keyframe:
+   * newly paired ones, and ones we had to skip a frame for because they were backed up.
+   */
+  needsKey: Set<WebSocket>;
+  lastKeyRequestAt: number;
+  /** Adaptive quality controller, fed by the RTT the agent reports in v2 frame headers. */
+  adaptive: AdaptiveQuality;
 }
+
+/** Skip frames for a controller whose socket already has this much queued. */
+const CONTROLLER_BACKLOG_LIMIT = 512 * 1024;
+const KEYFRAME_REQUEST_INTERVAL_MS = 300;
 
 type StoredHost = HostProfile & { secretHash?: string };
 
@@ -148,6 +162,9 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           ws: null,
           controllers: new Set(),
           secretHash,
+          needsKey: new Set(),
+          lastKeyRequestAt: 0,
+          adaptive: new AdaptiveQuality(),
         });
       }
     } catch (err) {
@@ -193,6 +210,14 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
   function sendJson(ws: WebSocket | null, event: string, payload: unknown) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ event, payload }));
+  }
+
+  /** Asks the host agent for a keyframe (throttled). Agents without v2 support ignore it. */
+  function requestKeyframe(entry: HostConnection) {
+    const now = Date.now();
+    if (now - entry.lastKeyRequestAt < KEYFRAME_REQUEST_INTERVAL_MS) return;
+    entry.lastKeyRequestAt = now;
+    sendJson(entry.ws, 'host:keyframe_request', {});
   }
 
   function broadcastFleet() {
@@ -580,48 +605,66 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     ws.on('message', (raw, isBinary) => {
       if (isBinary) {
         const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
-        if (buf.length <= 4 || buf[0] !== 0x44 || buf[1] !== 0x01) {
-          return;
-        }
-        const headerLen = buf.readUInt16BE(2);
-        if (buf.length <= 4 + headerLen) return;
-        let meta: {
-          hostId?: string;
-          seq?: number;
-          activeWindow?: string;
-          timestamp?: number;
-        };
-        try {
-          meta = JSON.parse(buf.subarray(4, 4 + headerLen).toString('utf8'));
-        } catch {
-          return;
-        }
+        const parsed = parseFrame(buf);
+        if (!parsed) return;
         // Frames are always attributed to the host this socket registered, never to a
         // client-supplied id. Rewrite the header if needed so controllers see the truth.
         if (!ownedHostId) return;
         const entry = hosts.get(ownedHostId);
         if (!entry || entry.ws !== ws) return;
-        let outBuf = buf;
+        const meta = parsed.header;
+        let outBuf: Buffer = buf;
         if (meta.hostId !== ownedHostId) {
-          const fixedMeta = Buffer.from(JSON.stringify({ ...meta, hostId: ownedHostId }), 'utf8');
-          if (fixedMeta.length > 0xffff) return;
-          const header = Buffer.alloc(4);
-          header[0] = 0x44;
-          header[1] = 0x01;
-          header.writeUInt16BE(fixedMeta.length, 2);
-          outBuf = Buffer.concat([header, fixedMeta, buf.subarray(4 + headerLen)]);
+          const rewritten = rewriteFrameHeader(buf, parsed, { ...meta, hostId: ownedHostId });
+          if (!rewritten) return;
+          outBuf = Buffer.from(rewritten.buffer, rewritten.byteOffset, rewritten.byteLength);
         }
-        entry.latestJpeg = Buffer.from(buf.subarray(4 + headerLen));
-        entry.latestFrame = undefined;
+
+        // Cache a complete image for newly paired controllers and the AI assistant:
+        // v1 frames, or v2 keyframes made of a single full-frame tile.
+        if (parsed.isKey) {
+          const t = parsed.tiles[0];
+          const fullTile =
+            parsed.version === 1 ||
+            (parsed.tiles.length === 1 && t.x === 0 && t.y === 0 && t.w === meta.w && t.h === meta.h);
+          if (fullTile) {
+            entry.latestJpeg = Buffer.from(buf.subarray(t.offset, t.offset + t.length));
+            entry.latestFrame = undefined;
+          }
+        }
         entry.profile.lastSeen = Date.now();
         entry.profile.status = 'online';
         if (typeof meta.activeWindow === 'string') {
           entry.profile.activeWindow = meta.activeWindow;
         }
+
+        let delivered = false;
         for (const ctrl of entry.controllers) {
-          if (ctrl.readyState === WebSocket.OPEN && ctrl.bufferedAmount < 512 * 1024) {
-            ctrl.send(outBuf, { binary: true });
+          if (ctrl.readyState !== WebSocket.OPEN) continue;
+          if (!parsed.isKey && entry.needsKey.has(ctrl)) continue;
+          if (ctrl.bufferedAmount >= CONTROLLER_BACKLOG_LIMIT) {
+            // Skipping a v2 delta would corrupt this controller's picture: resync with a keyframe.
+            if (parsed.version === 2) {
+              entry.needsKey.add(ctrl);
+              requestKeyframe(entry);
+            }
+            continue;
           }
+          ctrl.send(outBuf, { binary: true });
+          if (parsed.isKey) entry.needsKey.delete(ctrl);
+          delivered = true;
+        }
+
+        // Nobody will ack a frame nobody received; ack it here so the agent's
+        // in-flight window does not stall.
+        if (!delivered && typeof meta.seq === 'number') {
+          sendJson(ws, 'host:frame_ack', { seq: meta.seq, relay: true });
+        }
+
+        const rtt = meta.stats?.rtt;
+        if (parsed.version === 2 && typeof rtt === 'number') {
+          const level = entry.adaptive.onRttSample(rtt);
+          if (level) sendJson(ws, 'client:input', { type: 'quality', ...level });
         }
         return;
       }
@@ -700,6 +743,9 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           latestFrame: existing?.latestFrame,
           latestJpeg: existing?.latestJpeg,
           secretHash,
+          needsKey: new Set(controllers),
+          lastKeyRequestAt: 0,
+          adaptive: new AdaptiveQuality(),
         });
         ownedHostId = hostId;
 
@@ -828,7 +874,9 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
         }
 
         entry.controllers.add(ws);
+        entry.needsKey.add(ws);
         controllerHostMap.get(ws)?.add(entry.profile.hostId);
+        requestKeyframe(entry);
 
         sendJson(ws, 'client:paired', {
           host: {
@@ -847,9 +895,20 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
         const entry = hosts.get(hostId);
         if (entry) {
           entry.controllers.delete(ws);
+          entry.needsKey.delete(ws);
           controllerHostMap.get(ws)?.delete(hostId);
           sendJson(entry.ws, 'host:controller_count', { count: entry.controllers.size });
           broadcastFleet();
+        }
+        return;
+      }
+
+      if (event === 'client:keyframe_request') {
+        // A controller lost sync (e.g. a decode error) and needs a full picture.
+        const entry = hosts.get(String(payload.hostId || ''));
+        if (entry && entry.controllers.has(ws)) {
+          entry.needsKey.add(ws);
+          requestKeyframe(entry);
         }
         return;
       }
@@ -861,7 +920,13 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
         if (!entry || !input) return;
 
         if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
-          sendJson(entry.ws, 'client:input', input);
+          if (input.type === 'quality') {
+            // The user's preset is a ceiling; adaptive control works below it.
+            const level = entry.adaptive.setCap(Number(input.maxWidth) || 1152);
+            sendJson(entry.ws, 'client:input', { type: 'quality', ...level });
+          } else {
+            sendJson(entry.ws, 'client:input', input);
+          }
         }
         return;
       }
@@ -876,6 +941,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           const entry = hosts.get(id);
           if (entry) {
             entry.controllers.delete(ws);
+            entry.needsKey.delete(ws);
             sendJson(entry.ws, 'host:controller_count', { count: entry.controllers.size });
           }
         }

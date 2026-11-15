@@ -8,13 +8,14 @@ interface MobileAIDrawerProps {
   host: HostProfile;
   hosts: HostProfile[];
   frame: string | null;
+  getScreenshot?: () => string | undefined;
   onDispatchInput: (input: RemoteInputEvent, hostId?: string) => void;
   onSwitchHost: (hostId: string) => void;
   onClose: () => void;
 }
 
 /** Bottom sheet with the AI assistant for small screens. */
-export function MobileAIDrawer({ host, hosts, frame, onDispatchInput, onSwitchHost, onClose }: MobileAIDrawerProps) {
+export function MobileAIDrawer({ host, hosts, frame, getScreenshot, onDispatchInput, onSwitchHost, onClose }: MobileAIDrawerProps) {
   return createPortal(
     <div className="fixed inset-0 z-[10001] lg:hidden flex items-end bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true">
       <div className="w-full rounded-t-3xl bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 overflow-hidden">
@@ -35,6 +36,7 @@ export function MobileAIDrawer({ host, hosts, frame, onDispatchInput, onSwitchHo
             activeHost={host}
             hosts={hosts}
             activeFrame={frame}
+            getScreenshot={getScreenshot}
             onDispatchInput={onDispatchInput}
             onSwitchHost={onSwitchHost}
           />

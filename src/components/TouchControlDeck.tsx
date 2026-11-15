@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Bot, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad, ZoomIn, ZoomOut } from 'lucide-react';
+import { Activity, Bot, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad, ZoomIn, ZoomOut } from 'lucide-react';
 import type { HostProfile, RemoteInputEvent } from '../types/deskbridge';
 import { useCoalescedPointerInput } from '../hooks/useCoalescedPointerInput';
 import { mapToStreamCoords } from '../lib/streamCoords';
+import type { FrameStore } from '../lib/frameCompositor';
 import { AIAssistantPanel } from './AIAssistantPanel';
 import { FullscreenHud, type InputMode } from './controlDeck/FullscreenHud';
 import { HostChips } from './controlDeck/HostChips';
@@ -18,6 +19,7 @@ interface TouchControlDeckProps {
   hosts: HostProfile[];
   activeHost: HostProfile | null;
   activeFrame: string | null;
+  frameStore: FrameStore;
   onSelectHost: (hostId: string) => void;
   onSendInput: (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard' | 'ai') => void;
   onOpenQrScanner: () => void;
@@ -28,6 +30,7 @@ export function TouchControlDeck({
   hosts,
   activeHost,
   activeFrame,
+  frameStore,
   onSelectHost,
   onSendInput,
   onOpenQrScanner,
@@ -47,7 +50,8 @@ export function TouchControlDeck({
   const [sensitivity, setSensitivity] = useState(3.2);
   const [tapFeedback, setTapFeedback] = useState<{ x: number; y: number; id: number } | null>(null);
 
-  const streamImgRef = useRef<HTMLImageElement | null>(null);
+  const streamCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [showStats, setShowStats] = useState(false);
   const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const enteredNativeFsRef = useRef(false);
   const showKeyboardRef = useRef(false);
@@ -266,9 +270,9 @@ export function TouchControlDeck({
   }
 
   const computeNormalizedCoords = (clientX: number, clientY: number, fallbackEl: HTMLElement) => {
-    const img = streamImgRef.current;
-    const rect = (img || fallbackEl).getBoundingClientRect();
-    const natural = img ? { width: img.naturalWidth, height: img.naturalHeight } : undefined;
+    const canvas = streamCanvasRef.current;
+    const rect = (canvas && canvas.width > 0 ? canvas : fallbackEl).getBoundingClientRect();
+    const natural = canvas && canvas.width > 0 ? { width: canvas.width, height: canvas.height } : undefined;
     return mapToStreamCoords(clientX, clientY, rect, natural);
   };
 
@@ -551,6 +555,7 @@ export function TouchControlDeck({
     setModifiers((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
   const selectMonitor = (index: number) => onSendInput({ type: 'monitor', index }, activeHost.hostId, 'touch');
   const sendText = (text: string) => onSendInput({ type: 'type', text }, activeHost.hostId, 'keyboard');
+  const getScreenshot = () => frameStore.peek(activeHost.hostId)?.toDataUrl();
   const dispatchAiInput = (input: RemoteInputEvent, hostId?: string) =>
     onSendInput(input, hostId || activeHost.hostId, 'ai');
 
@@ -566,13 +571,14 @@ export function TouchControlDeck({
     return (
       <StreamViewport
         host={activeHost}
-        frame={activeFrame}
+        frameStore={frameStore}
         fullscreen={fullscreen}
+        showStats={showStats}
         zoomed={zoomed}
         crosshair={!useGestureTrackpad}
         pointerHandlers={useGestureTrackpad ? trackpadHandlers : directHandlers}
         onWheel={handleViewportWheel}
-        imgRef={streamImgRef}
+        canvasRef={streamCanvasRef}
         tapFeedback={tapFeedback}
       />
     );
@@ -658,6 +664,8 @@ export function TouchControlDeck({
             onQualityChange={handleQualityChange}
             onSelectMonitor={selectMonitor}
             onToggleZoom={() => setZoomed((z) => !z)}
+            statsOpen={showStats}
+            onToggleStats={() => setShowStats((v) => !v)}
             onToggleKeyboard={toggleKeyboardDrawer}
             onOpenAI={() => setShowMobileAI(true)}
             onHide={() => setHudHidden(true)}
@@ -747,6 +755,20 @@ export function TouchControlDeck({
 
                 <button
                   type="button"
+                  onClick={() => setShowStats((v) => !v)}
+                  aria-pressed={showStats}
+                  className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border ${
+                    showStats
+                      ? 'border-blue-600 bg-blue-600 text-white'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                  aria-label={showStats ? 'Hide stream stats' : 'Show stream stats'}
+                >
+                  <Activity className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
                   onClick={enterFullscreen}
                   className="min-h-[36px] inline-flex items-center gap-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-medium"
                   aria-label="Enter full screen"
@@ -832,6 +854,7 @@ export function TouchControlDeck({
             activeHost={activeHost}
             hosts={hosts}
             activeFrame={activeFrame}
+            getScreenshot={getScreenshot}
             onDispatchInput={dispatchAiInput}
             onSwitchHost={onSelectHost}
           />
@@ -845,6 +868,7 @@ export function TouchControlDeck({
           host={activeHost}
           hosts={hosts}
           frame={activeFrame}
+          getScreenshot={getScreenshot}
           onDispatchInput={dispatchAiInput}
           onSwitchHost={onSelectHost}
           onClose={() => setShowMobileAI(false)}

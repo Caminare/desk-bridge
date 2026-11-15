@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Activity,
   Bot,
   ChevronDown,
   ChevronUp,
@@ -37,6 +38,8 @@ interface FullscreenHudProps {
   onQualityChange: (preset: StreamQualityPreset) => void;
   onSelectMonitor: (index: number) => void;
   onToggleZoom: () => void;
+  statsOpen: boolean;
+  onToggleStats: () => void;
   onToggleKeyboard: () => void;
   onOpenAI: () => void;
   onHide: () => void;
@@ -187,6 +190,15 @@ export function FullscreenHud(props: FullscreenHudProps) {
           aria-label={zoomed ? 'Reset zoom' : 'Zoom screen'}
         >
           {zoomed ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
+        </button>
+
+        <button
+          type="button"
+          onClick={props.onToggleStats}
+          className={toggleButton(props.statsOpen)}
+          aria-label={props.statsOpen ? 'Hide stream stats' : 'Show stream stats'}
+        >
+          <Activity className="w-4 h-4" />
         </button>
 
         <button

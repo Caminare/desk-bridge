@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActivityLogEntry, HostProfile, RemoteInputEvent } from '../types/deskbridge';
 import { apiFetch, notifyUnauthorized } from '../lib/auth';
+import { FrameStore } from '../lib/frameCompositor';
+
+/** How often thumbnails (fleet cards, AI previews) are refreshed from the live canvas. */
+const SNAPSHOT_INTERVAL_MS = 2000;
 
 function getWsEndpoint(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -13,6 +17,19 @@ export function useDeskBridgeSocket() {
   const disposedRef = useRef(false);
   const activeHostIdRef = useRef<string | null>(null);
   const blobUrlsByHostRef = useRef<Record<string, string>>({});
+  const snapshotVersionRef = useRef<Record<string, number>>({});
+  // Live frames are composited onto per-host canvases outside React state, so a new
+  // frame does not re-render the app. Only throttled snapshots go into state.
+  const frameStoreRef = useRef<FrameStore | null>(null);
+  if (!frameStoreRef.current) {
+    frameStoreRef.current = new FrameStore((hostId) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ event: 'client:keyframe_request', payload: { hostId } }));
+      }
+    });
+  }
+  const frameStore = frameStoreRef.current;
   const hostLastMetaAtRef = useRef<Record<string, { ts: number; win?: string }>>({});
 
   const [wsConnected, setWsConnected] = useState(false);
@@ -98,16 +115,10 @@ export function useDeskBridgeSocket() {
         const buf = evt.data;
         if (buf.byteLength <= 4) return;
         const view = new DataView(buf);
-        if (view.getUint8(0) !== 0x44 || view.getUint8(1) !== 0x01) return;
+        if (view.getUint8(0) !== 0x44) return;
         const headerLen = view.getUint16(2, false);
-        if (buf.byteLength <= 4 + headerLen) return;
-
-        let meta: {
-          hostId?: string;
-          seq?: number;
-          activeWindow?: string;
-          timestamp?: number;
-        };
+        if (buf.byteLength < 4 + headerLen) return;
+        let meta: { hostId?: string; activeWindow?: string };
         try {
           meta = JSON.parse(textDecoder.decode(new Uint8Array(buf, 4, headerLen)));
         } catch {
@@ -115,26 +126,17 @@ export function useDeskBridgeSocket() {
         }
         const hostId = meta.hostId;
         if (!hostId) return;
-
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              event: 'client:frame_ack',
-              payload: { hostId, seq: meta.seq, timestamp: meta.timestamp },
-            }),
-          );
-        }
-
-        const jpegBlob = new Blob([new Uint8Array(buf, 4 + headerLen)], { type: 'image/jpeg' });
-        const nextUrl = URL.createObjectURL(jpegBlob);
-        const prevUrl = blobUrlsByHostRef.current[hostId];
-        blobUrlsByHostRef.current[hostId] = nextUrl;
-        if (prevUrl) {
-          window.setTimeout(() => URL.revokeObjectURL(prevUrl), 1500);
-        }
-
-        setFramesByHost((prev) => ({ ...prev, [hostId]: nextUrl }));
         applyHostMeta(hostId, meta.activeWindow);
+
+        // Ack only after the frame is on the canvas, so the agent paces to what we can display.
+        frameStore
+          .get(hostId)
+          .applyBinary(buf)
+          .then((result) => {
+            if (result.seq !== undefined && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ event: 'client:frame_ack', payload: { hostId, seq: result.seq } }));
+            }
+          });
         return;
       }
 
@@ -155,6 +157,7 @@ export function useDeskBridgeSocket() {
         setPairError(null);
         setActiveHostId(data.host.hostId);
         if (data.latestFrame) {
+          frameStore.get(data.host.hostId).applyImageUrl(data.latestFrame);
           setFramesByHost((prev) => ({ ...prev, [data.host.hostId]: data.latestFrame! }));
         }
         setHosts((prev) => {
@@ -177,18 +180,22 @@ export function useDeskBridgeSocket() {
           cpuUsage?: number;
           memoryUsage?: number;
         };
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              event: 'client:frame_ack',
-              payload: { hostId: data.hostId, seq: data.seq, timestamp: data.timestamp },
-            }),
-          );
-        }
-        if (data.frame) {
-          setFramesByHost((prev) => ({ ...prev, [data.hostId]: data.frame }));
-        }
         applyHostMeta(data.hostId, data.activeWindow, data.cpuUsage, data.memoryUsage);
+        if (data.frame) {
+          frameStore
+            .get(data.hostId)
+            .applyImageUrl(data.frame)
+            .then(() => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    event: 'client:frame_ack',
+                    payload: { hostId: data.hostId, seq: data.seq, timestamp: data.timestamp },
+                  }),
+                );
+              }
+            });
+        }
       } else if (msg.event === 'host:status' && msg.payload) {
         const data = msg.payload as { hostId: string; status: HostProfile['status'] };
         setHosts((prev) =>
@@ -207,7 +214,7 @@ export function useDeskBridgeSocket() {
       }
       reconnectTimerRef.current = window.setTimeout(connect, 2500);
     };
-  }, [appendActivity, applyHostMeta]);
+  }, [appendActivity, applyHostMeta, frameStore]);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -220,6 +227,24 @@ export function useDeskBridgeSocket() {
       Object.values(urlsMap).forEach((u) => URL.revokeObjectURL(u));
     };
   }, [connect]);
+
+  // Refresh thumbnails from the live canvases (only for hosts that drew something new).
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      for (const [hostId, compositor] of frameStore.entries()) {
+        if (!compositor.hasImage || snapshotVersionRef.current[hostId] === compositor.version) continue;
+        snapshotVersionRef.current[hostId] = compositor.version;
+        const blob = await compositor.toBlob();
+        if (!blob) continue;
+        const url = URL.createObjectURL(blob);
+        const prev = blobUrlsByHostRef.current[hostId];
+        blobUrlsByHostRef.current[hostId] = url;
+        setFramesByHost((p) => ({ ...p, [hostId]: url }));
+        if (prev) window.setTimeout(() => URL.revokeObjectURL(prev), 1500);
+      }
+    }, SNAPSHOT_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [frameStore]);
 
   const pairHostById = useCallback(
     (hostId: string) => {
@@ -249,12 +274,13 @@ export function useDeskBridgeSocket() {
       }
       const host = data.host as HostProfile;
       if (data.latestFrame) {
+        frameStore.get(host.hostId).applyImageUrl(data.latestFrame);
         setFramesByHost((prev) => ({ ...prev, [host.hostId]: data.latestFrame }));
       }
       pairHostById(host.hostId);
       return host;
     },
-    [pairHostById],
+    [pairHostById, frameStore],
   );
 
   const sendRemoteInput = useCallback(
@@ -316,6 +342,7 @@ export function useDeskBridgeSocket() {
     activeHostId,
     activeFrame,
     framesByHost,
+    frameStore,
     pairError,
     activityLog,
     pairHostById,

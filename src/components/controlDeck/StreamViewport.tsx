@@ -1,30 +1,35 @@
 import React from 'react';
 import { Monitor } from 'lucide-react';
 import type { HostProfile } from '../../types/deskbridge';
+import type { FrameStore } from '../../lib/frameCompositor';
+import { LiveStreamCanvas } from '../LiveStreamCanvas';
+import { StreamStatsOverlay } from './StreamStatsOverlay';
 import type { PointerHandlers } from './TrackpadPanel';
 
 interface StreamViewportProps {
   host: HostProfile;
-  frame: string | null;
+  frameStore: FrameStore;
   fullscreen: boolean;
   zoomed: boolean;
   /** Show a crosshair cursor (direct-tap mode) instead of trackpad gestures. */
   crosshair: boolean;
+  showStats: boolean;
   pointerHandlers: PointerHandlers;
   onWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
-  imgRef: React.Ref<HTMLImageElement>;
+  canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
   tapFeedback: { x: number; y: number; id: number } | null;
 }
 
 export function StreamViewport({
   host,
-  frame,
+  frameStore,
   fullscreen,
   zoomed,
   crosshair,
+  showStats,
   pointerHandlers,
   onWheel,
-  imgRef,
+  canvasRef,
   tapFeedback,
 }: StreamViewportProps) {
   return (
@@ -34,6 +39,7 @@ export function StreamViewport({
         fullscreen ? 'w-full h-full flex items-center justify-center' : 'bg-slate-950'
       } ${!zoomed ? 'touch-none' : ''} ${crosshair ? 'cursor-crosshair' : ''}`}
     >
+      {showStats && <StreamStatsOverlay store={frameStore} hostId={host.hostId} />}
       <div
         {...pointerHandlers}
         onContextMenu={(e) => e.preventDefault()}
@@ -41,28 +47,26 @@ export function StreamViewport({
           fullscreen ? 'w-full h-full' : 'aspect-video w-full'
         } ${zoomed ? 'scale-150 origin-center' : 'scale-100'}`}
       >
-        {frame ? (
-          <img
-            ref={imgRef}
-            src={frame}
-            alt={`Live desktop stream of ${host.name}`}
-            referrerPolicy="no-referrer"
-            draggable={false}
-            className="w-full h-full max-w-full max-h-full object-contain pointer-events-none select-none"
-          />
-        ) : (
-          <div className="flex flex-col items-center justify-center gap-2 p-8 text-center text-slate-400">
-            <Monitor className="w-10 h-10 text-slate-600" />
-            <p className="text-sm font-medium text-slate-300">
-              {host.status === 'online' ? 'Waiting for next video frame from Windows host...' : `${host.name} is offline`}
-            </p>
-            <p className="text-xs text-slate-500 max-w-sm">
-              {host.status === 'online'
-                ? 'Touchpad, keyboard, and AI commands are active.'
-                : 'Start the DeskBridge Host agent on that computer to resume streaming.'}
-            </p>
-          </div>
-        )}
+        <LiveStreamCanvas
+          store={frameStore}
+          hostId={host.hostId}
+          canvasRef={canvasRef}
+          ariaLabel={`Live desktop stream of ${host.name}`}
+          className="w-full h-full max-w-full max-h-full object-contain pointer-events-none select-none"
+          fallback={
+            <div className="flex flex-col items-center justify-center gap-2 p-8 text-center text-slate-400">
+              <Monitor className="w-10 h-10 text-slate-600" />
+              <p className="text-sm font-medium text-slate-300">
+                {host.status === 'online' ? 'Waiting for next video frame from Windows host...' : `${host.name} is offline`}
+              </p>
+              <p className="text-xs text-slate-500 max-w-sm">
+                {host.status === 'online'
+                  ? 'Touchpad, keyboard, and AI commands are active.'
+                  : 'Start the DeskBridge Host agent on that computer to resume streaming.'}
+              </p>
+            </div>
+          }
+        />
 
         {tapFeedback && (
           <div

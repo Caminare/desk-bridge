@@ -114,6 +114,21 @@ DeskBridge uses a three-part real-time architecture connected through a central 
 
 ---
 
+## Streaming Performance
+
+DeskBridge is built for controlling PCs over the internet, so it keeps the stream small and adapts to the link:
+
+- **Only changed screen areas are sent.** The agent compares 64×64 tiles and sends JPEGs of the changed regions; an idle desktop costs almost nothing, typing sends a few small tiles.
+- **Capture and sending run in parallel** with input handling, so the mouse stays responsive even while a frame is uploading.
+- **Adaptive quality.** The relay watches the frame round trip (PC upload → relay → phone → back) and lowers resolution/JPEG quality when it grows, raising it again when the link is calm. The SD/HD/Ultra selector sets the maximum.
+- **Smooth on phones.** Frames are drawn straight onto a canvas (decoded off the main thread) and acknowledged only after they are on screen.
+
+Tap the **pulse icon** in the Control Deck or fullscreen toolbar to see live stats: FPS, download/upload rate, round trip, capture/encode/decode times, current quality and changed tiles. If the round trip is high and upload is near your PC's upload speed, the PC's connection is the bottleneck. Where the relay runs matters too: every frame goes PC → relay → phone, so a relay on a well-connected server near your users is faster than one at home behind a tunnel.
+
+Agent tuning parameters (`DeskBridge-Host.ps1 -Name value`): `-MaxStreamWidth` / `-JpegQuality` (starting quality), `-FrameIntervalMs` (idle capture interval, default 100), `-MaxInFlight` (unacknowledged frames, default 4; raise for very high-latency links).
+
+---
+
 ## Exposing DeskBridge Over the Internet with ngrok (Step-by-Step)
 
 You only need **one** DeskBridge server + **one** ngrok tunnel to control **all** of your Windows computers from a **single URL** on your Android phone.

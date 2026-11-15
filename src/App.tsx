@@ -15,6 +15,7 @@ import { TouchControlDeck } from './components/TouchControlDeck';
 import { AIAssistantPanel } from './components/AIAssistantPanel';
 import { WindowsHostView } from './components/WindowsHostView';
 import { QrScannerModal } from './components/QrScannerModal';
+import { LiveStreamCanvas } from './components/LiveStreamCanvas';
 import { logout } from './lib/auth';
 
 type ActiveTab = 'fleet' | 'control' | 'assistant' | 'host';
@@ -30,6 +31,7 @@ export default function App() {
     activeHostId,
     activeFrame,
     framesByHost,
+    frameStore,
     pairError,
     activityLog,
     pairHostById,
@@ -183,6 +185,7 @@ export default function App() {
             hosts={hosts}
             activeHost={activeHost}
             activeFrame={activeFrame}
+            frameStore={frameStore}
             onSelectHost={pairHostById}
             onSendInput={sendRemoteInput}
             onOpenQrScanner={() => setQrModalOpen(true)}
@@ -197,6 +200,7 @@ export default function App() {
                 activeHost={activeHost}
                 hosts={hosts}
                 activeFrame={activeFrame}
+                getScreenshot={() => (activeHost ? frameStore.peek(activeHost.hostId)?.toDataUrl() : undefined)}
                 onDispatchInput={(input, hostId) =>
                   sendRemoteInput(input, hostId || activeHost?.hostId, 'ai')
                 }
@@ -221,21 +225,23 @@ export default function App() {
               </div>
 
               <div className="aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-center">
-                {activeFrame ? (
-                  <img
-                    src={activeFrame}
-                    alt="Active workstation view"
-                    referrerPolicy="no-referrer"
+                {activeHost ? (
+                  <LiveStreamCanvas
+                    store={frameStore}
+                    hostId={activeHost.hostId}
+                    ariaLabel="Active workstation view"
                     className="w-full h-full object-contain"
+                    fallback={
+                      <div className="text-center p-6 space-y-1.5 text-slate-400">
+                        <Monitor className="w-8 h-8 mx-auto text-slate-600" />
+                        <p className="text-xs">Awaiting frame from active workstation</p>
+                      </div>
+                    }
                   />
                 ) : (
                   <div className="text-center p-6 space-y-1.5 text-slate-400">
                     <Monitor className="w-8 h-8 mx-auto text-slate-600" />
-                    <p className="text-xs">
-                      {activeHost
-                        ? 'Awaiting frame from active workstation'
-                        : 'Select a paired computer below'}
-                    </p>
+                    <p className="text-xs">Select a paired computer below</p>
                   </div>
                 )}
               </div>

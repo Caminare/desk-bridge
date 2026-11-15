@@ -29,11 +29,14 @@ param(
   [string]$RelayWsUrl = '${safeWsUrl}',
   [string]$AppBaseUrl = '${safeAppUrl}',
   [string]$EnrollKey = '${safeEnrollKey}',
-  [int]$FrameIntervalMs = 80,
+  # Capture interval while idle; while you are actively controlling the PC it drops to ~33 ms.
+  [int]$FrameIntervalMs = 100,
   [int]$JpegQuality = 62,
   [int]$MaxStreamWidth = 1152,
   # -1 = primary monitor; otherwise an index into [System.Windows.Forms.Screen]::AllScreens
-  [int]$MonitorIndex = -1
+  [int]$MonitorIndex = -1,
+  # Frames sent but not yet acknowledged by a controller. Higher = smoother on high-latency links.
+  [int]$MaxInFlight = 4
 )
 
 $ErrorActionPreference = 'Stop'
@@ -183,6 +186,341 @@ public static class DeskBridgeWin32 {
 }
 "@
 
+# Capture pipeline: runs on a background thread so input handling and network sends never
+# wait for screen capture or JPEG encoding. Sends only the screen tiles that changed.
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+public class DeskBridgeFrame {
+  public bool Key;
+  public int Width;
+  public int Height;
+  // Flat [x, y, w, h, byteLength] per tile, in stream pixels.
+  public int[] Rects;
+  public byte[] Data;
+  public int DataLength;
+  public double CaptureMs;
+  public double EncodeMs;
+  public int ChangedTiles;
+  public int TotalTiles;
+  public int Quality;
+  internal byte[] Pixels;
+  internal int Generation;
+  internal int KeyFor;
+}
+
+public class DeskBridgeStreamer {
+  public const int TileSize = 64;
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct POINT { public int x; public int y; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
+
+  [DllImport("user32.dll")]
+  static extern bool GetCursorInfo(ref CURSORINFO pci);
+
+  [DllImport("user32.dll")]
+  static extern bool DrawIconEx(IntPtr hdc, int xLeft, int yTop, IntPtr hIcon, int cxWidth, int cyWidth, int istepIfAniCur, IntPtr hbrFlickerFreeDraw, int diFlags);
+
+  readonly object gate = new object();
+  readonly Stopwatch clock = Stopwatch.StartNew();
+  readonly ImageCodecInfo jpegCodec;
+  Thread thread;
+  volatile bool running;
+
+  public volatile bool Paused = true;
+  public int IdleIntervalMs = 100;
+  public int ActiveIntervalMs = 33;
+  public string LastError = "";
+
+  // Requested settings (guarded by gate; applied on the capture thread).
+  Rectangle bounds;
+  int maxWidth;
+  int quality;
+  bool configDirty = true;
+  int keyRequested = 1;
+  int keySatisfied = 0;
+  long activeUntil;
+
+  // Capture-thread-only state.
+  Rectangle curBounds;
+  int curMaxWidth = -1;
+  Bitmap capBmp;
+  Graphics capG;
+  Bitmap outBmp;
+  Graphics outG;
+  int outW;
+  int outH;
+  int stride;
+  EncoderParameters encParams;
+  readonly MemoryStream tileStream = new MemoryStream();
+
+  // Shared frame state (guarded by gate).
+  byte[] refPixels;
+  int generation;
+  DeskBridgeFrame pending;
+  readonly Stack<byte[]> spare = new Stack<byte[]>();
+
+  public DeskBridgeStreamer(Rectangle bounds, int maxWidth, int quality) {
+    foreach (ImageCodecInfo c in ImageCodecInfo.GetImageEncoders()) {
+      if (c.MimeType == "image/jpeg") jpegCodec = c;
+    }
+    this.bounds = bounds;
+    this.maxWidth = maxWidth;
+    this.quality = Clamp(quality, 30, 95);
+  }
+
+  static int Clamp(int v, int lo, int hi) { return Math.Max(lo, Math.Min(hi, v)); }
+
+  public void Start() {
+    if (running) return;
+    running = true;
+    thread = new Thread(Run);
+    thread.IsBackground = true;
+    thread.Name = "DeskBridgeCapture";
+    thread.Start();
+  }
+
+  public void Stop() {
+    running = false;
+    if (thread != null) thread.Join(2000);
+  }
+
+  public void SetBounds(Rectangle b) { lock (gate) { bounds = b; configDirty = true; keyRequested++; } }
+  public void SetQuality(int mw, int q) { lock (gate) { maxWidth = mw; quality = Clamp(q, 30, 95); configDirty = true; } }
+  public void RequestKeyframe() { lock (gate) { keyRequested++; } }
+  public void NotifyActivity() { lock (gate) { activeUntil = clock.ElapsedMilliseconds + 600; } }
+  public int CurrentQuality { get { lock (gate) { return quality; } } }
+
+  /// Hands the freshest unsent frame to the sender. Its pixels become the diff reference.
+  public DeskBridgeFrame TryTakeFrame() {
+    lock (gate) {
+      DeskBridgeFrame f = pending;
+      if (f == null) return null;
+      pending = null;
+      if (refPixels != null) spare.Push(refPixels);
+      refPixels = f.Pixels;
+      f.Pixels = null;
+      generation++;
+      if (f.Key && f.KeyFor > keySatisfied) keySatisfied = f.KeyFor;
+      return f;
+    }
+  }
+
+  void Run() {
+    while (running) {
+      long started = clock.ElapsedMilliseconds;
+      int interval;
+      lock (gate) { interval = started < activeUntil ? ActiveIntervalMs : IdleIntervalMs; }
+      if (!Paused) {
+        try {
+          Tick();
+          LastError = "";
+        } catch (Exception e) {
+          LastError = e.Message;
+          Thread.Sleep(250);
+        }
+      }
+      long spent = clock.ElapsedMilliseconds - started;
+      Thread.Sleep((int)Math.Max(2, interval - spent));
+    }
+  }
+
+  byte[] TakeSpare(int size) {
+    lock (gate) {
+      while (spare.Count > 0) {
+        byte[] b = spare.Pop();
+        if (b.Length == size) return b;
+      }
+    }
+    return new byte[size];
+  }
+
+  void Configure(Rectangle b, int mw, int q) {
+    bool sizeChanged = b != curBounds || mw != curMaxWidth || capBmp == null;
+    encParams = new EncoderParameters(1);
+    encParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)q);
+    if (!sizeChanged) return;
+
+    if (outG != null) outG.Dispose();
+    if (outBmp != null && outBmp != capBmp) outBmp.Dispose();
+    if (capG != null) capG.Dispose();
+    if (capBmp != null) capBmp.Dispose();
+
+    curBounds = b;
+    curMaxWidth = mw;
+    capBmp = new Bitmap(b.Width, b.Height, PixelFormat.Format24bppRgb);
+    capG = Graphics.FromImage(capBmp);
+    int w = Math.Min(Math.Max(320, mw), b.Width);
+    int h = (int)Math.Round(b.Height * (w / (double)b.Width));
+    if (w < b.Width) {
+      outBmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
+      outG = Graphics.FromImage(outBmp);
+      outG.InterpolationMode = InterpolationMode.Bilinear;
+      outG.CompositingMode = CompositingMode.SourceCopy;
+      outG.CompositingQuality = CompositingQuality.HighSpeed;
+      outG.SmoothingMode = SmoothingMode.HighSpeed;
+      outG.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+    } else {
+      outBmp = capBmp;
+      outG = null;
+    }
+    outW = w;
+    outH = h;
+  }
+
+  void DrawCursor() {
+    CURSORINFO ci = new CURSORINFO();
+    ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    if (!GetCursorInfo(ref ci) || ci.flags != 1 || ci.hCursor == IntPtr.Zero) return;
+    IntPtr hdc = capG.GetHdc();
+    try {
+      DrawIconEx(hdc, ci.ptScreenPos.x - curBounds.X, ci.ptScreenPos.y - curBounds.Y, ci.hCursor, 0, 0, 0, IntPtr.Zero, 3);
+    } finally {
+      capG.ReleaseHdc(hdc);
+    }
+  }
+
+  void CopyPixels(byte[] dst) {
+    BitmapData d = outBmp.LockBits(new Rectangle(0, 0, outW, outH), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+    try {
+      Marshal.Copy(d.Scan0, dst, 0, stride * outH);
+    } finally {
+      outBmp.UnlockBits(d);
+    }
+  }
+
+  int ReadStride() {
+    BitmapData d = outBmp.LockBits(new Rectangle(0, 0, outW, outH), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+    int s = Math.Abs(d.Stride);
+    outBmp.UnlockBits(d);
+    return s;
+  }
+
+  bool TileDiffers(byte[] a, byte[] b, int tx, int ty) {
+    int x0 = tx * TileSize * 3;
+    int x1 = Math.Min((tx + 1) * TileSize, outW) * 3;
+    int y0 = ty * TileSize;
+    int y1 = Math.Min(y0 + TileSize, outH);
+    for (int y = y0; y < y1; y++) {
+      int row = y * stride;
+      for (int i = row + x0; i < row + x1; i++) {
+        if (a[i] != b[i]) return true;
+      }
+    }
+    return false;
+  }
+
+  void EncodeRect(int x, int y, int w, int h, List<int> rects, MemoryStream output) {
+    tileStream.SetLength(0);
+    if (x == 0 && y == 0 && w == outW && h == outH) {
+      outBmp.Save(tileStream, jpegCodec, encParams);
+    } else {
+      using (Bitmap part = outBmp.Clone(new Rectangle(x, y, w, h), PixelFormat.Format24bppRgb)) {
+        part.Save(tileStream, jpegCodec, encParams);
+      }
+    }
+    int len = (int)tileStream.Length;
+    output.Write(tileStream.GetBuffer(), 0, len);
+    rects.Add(x); rects.Add(y); rects.Add(w); rects.Add(h); rects.Add(len);
+  }
+
+  void Tick() {
+    Rectangle b; int mw; int q; bool dirty; int myGen; byte[] reference; int keyReq; bool wantKey;
+    lock (gate) {
+      b = bounds; mw = maxWidth; q = quality; dirty = configDirty; configDirty = false;
+      myGen = generation; reference = refPixels; keyReq = keyRequested; wantKey = keyRequested != keySatisfied;
+    }
+    if (dirty || capBmp == null) {
+      Configure(b, mw, q);
+      stride = ReadStride();
+    }
+
+    Stopwatch sw = Stopwatch.StartNew();
+    capG.CopyFromScreen(curBounds.Location, Point.Empty, curBounds.Size, CopyPixelOperation.SourceCopy);
+    DrawCursor();
+    if (outG != null) outG.DrawImage(capBmp, 0, 0, outW, outH);
+    byte[] cur = TakeSpare(stride * outH);
+    CopyPixels(cur);
+    double capMs = sw.Elapsed.TotalMilliseconds;
+
+    int tilesX = (outW + TileSize - 1) / TileSize;
+    int tilesY = (outH + TileSize - 1) / TileSize;
+    int total = tilesX * tilesY;
+    bool key = wantKey || reference == null || reference.Length != cur.Length;
+    bool[] changed = new bool[total];
+    int nChanged = 0;
+    if (!key) {
+      for (int ty = 0; ty < tilesY; ty++) {
+        for (int tx = 0; tx < tilesX; tx++) {
+          if (TileDiffers(cur, reference, tx, ty)) { changed[ty * tilesX + tx] = true; nChanged++; }
+        }
+      }
+      if (nChanged == 0) {
+        // Screen matches what the receiver already has: nothing to send.
+        lock (gate) {
+          spare.Push(cur);
+          if (pending != null && pending.Generation == myGen && !pending.Key) {
+            spare.Push(pending.Pixels);
+            pending = null;
+          }
+        }
+        return;
+      }
+      // Past half the screen, one full JPEG is smaller than many tiles.
+      if (nChanged * 2 > total) key = true;
+    }
+
+    sw.Restart();
+    List<int> rects = new List<int>();
+    MemoryStream output = new MemoryStream();
+    if (key) {
+      EncodeRect(0, 0, outW, outH, rects, output);
+      nChanged = total;
+    } else {
+      for (int ty = 0; ty < tilesY; ty++) {
+        int tx = 0;
+        while (tx < tilesX) {
+          if (!changed[ty * tilesX + tx]) { tx++; continue; }
+          int start = tx;
+          while (tx < tilesX && changed[ty * tilesX + tx]) tx++;
+          int x = start * TileSize;
+          int y = ty * TileSize;
+          EncodeRect(x, y, Math.Min(tx * TileSize, outW) - x, Math.Min(TileSize, outH - y), rects, output);
+        }
+      }
+    }
+    double encMs = sw.Elapsed.TotalMilliseconds;
+
+    DeskBridgeFrame f = new DeskBridgeFrame();
+    f.Key = key; f.Width = outW; f.Height = outH; f.Rects = rects.ToArray();
+    f.Data = output.GetBuffer(); f.DataLength = (int)output.Length;
+    f.CaptureMs = capMs; f.EncodeMs = encMs; f.ChangedTiles = nChanged; f.TotalTiles = total; f.Quality = q;
+    f.Pixels = cur; f.Generation = myGen; f.KeyFor = keyReq;
+
+    lock (gate) {
+      if (generation != myGen) {
+        // The sender took a frame while we worked, so our diff base is outdated. Retry next tick.
+        spare.Push(cur);
+        return;
+      }
+      if (pending != null) spare.Push(pending.Pixels);
+      pending = f;
+    }
+  }
+}
+"@
+
 [DeskBridgeWin32]::SetProcessDPIAware() | Out-Null
 
 $jsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
@@ -234,72 +572,10 @@ $bounds = [System.Windows.Forms.Screen]::AllScreens[$script:activeMonitor].Bound
 $screenW = $bounds.Width
 $screenH = $bounds.Height
 
-$jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
-$encoderParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
-$encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$JpegQuality)
-
-$capBmp = New-Object System.Drawing.Bitmap($screenW, $screenH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
-$capG = [System.Drawing.Graphics]::FromImage($capBmp)
-$capMs = New-Object System.IO.MemoryStream
-$script:targetW = 0
-$script:targetH = 0
-$script:targetQ = $JpegQuality
-$script:scaledBmp = $null
-$script:scaledG = $null
-$script:fastBmp = $null
-$script:fastG = $null
-$script:fastW = 0
-$script:fastH = 0
 $script:sendBuf = New-Object byte[] 2097152
-$script:fastEncoderParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
-$script:fastEncoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]50)
-
-function Update-CaptureConfig([int]$maxW, [int]$quality) {
-  $script:lastMaxW = $maxW
-  $script:lastQuality = $quality
-  $q = [Math]::Max(30, [Math]::Min(95, $quality))
-  $script:targetQ = $q
-  $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$q)
-  $fq = [Math]::Min(50, $q)
-  $script:fastEncoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$fq)
-
-  $nextW = [Math]::Min([Math]::Max(640, $maxW), $screenW)
-  $nextH = [int]([Math]::Round($screenH * ($nextW / $screenW)))
-  if ($nextW -ne $script:targetW -or $nextH -ne $script:targetH) {
-    if ($null -ne $script:scaledG) { $script:scaledG.Dispose() }
-    if ($null -ne $script:scaledBmp) { $script:scaledBmp.Dispose() }
-    $script:targetW = $nextW
-    $script:targetH = $nextH
-    if ($nextW -lt $screenW) {
-      $script:scaledBmp = New-Object System.Drawing.Bitmap($nextW, $nextH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
-      $script:scaledG = [System.Drawing.Graphics]::FromImage($script:scaledBmp)
-      $script:scaledG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
-      $script:scaledG.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
-      $script:scaledG.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
-      $script:scaledG.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighSpeed
-    } else {
-      $script:scaledBmp = $null
-      $script:scaledG = $null
-    }
-  }
-
-  $mw = [Math]::Min(880, $nextW)
-  $mh = [int]([Math]::Round($screenH * ($mw / $screenW)))
-  if ($mw -ne $script:fastW -or $mh -ne $script:fastH) {
-    if ($null -ne $script:fastG) { $script:fastG.Dispose() }
-    if ($null -ne $script:fastBmp) { $script:fastBmp.Dispose() }
-    $script:fastW = $mw
-    $script:fastH = $mh
-    $script:fastBmp = New-Object System.Drawing.Bitmap($mw, $mh, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
-    $script:fastG = [System.Drawing.Graphics]::FromImage($script:fastBmp)
-    $script:fastG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
-    $script:fastG.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
-    $script:fastG.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
-    $script:fastG.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighSpeed
-  }
-}
-
-Update-CaptureConfig $MaxStreamWidth $JpegQuality
+$script:streamer = New-Object DeskBridgeStreamer -ArgumentList $bounds, $MaxStreamWidth, $JpegQuality
+$script:streamer.IdleIntervalMs = [Math]::Max(33, $FrameIntervalMs)
+$script:streamer.Start()
 
 function Select-Monitor([int]$index) {
   $resolved = Resolve-MonitorIndex $index
@@ -307,14 +583,8 @@ function Select-Monitor([int]$index) {
   $script:bounds = [System.Windows.Forms.Screen]::AllScreens[$resolved].Bounds
   $script:screenW = $script:bounds.Width
   $script:screenH = $script:bounds.Height
-  $capG.Dispose()
-  $capBmp.Dispose()
-  $script:capBmp = New-Object System.Drawing.Bitmap($script:screenW, $script:screenH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
-  $script:capG = [System.Drawing.Graphics]::FromImage($script:capBmp)
-  # Force scaled buffers to be rebuilt for the new resolution.
-  $script:targetW = 0
-  $script:fastW = 0
-  Update-CaptureConfig $script:lastMaxW $script:lastQuality
+  # The capture thread reallocates its buffers and sends a keyframe for the new display.
+  $script:streamer.SetBounds($script:bounds)
   $script:monitorChanged = $true
   Write-Host "Streaming monitor $resolved ($($script:screenW)x$($script:screenH))" -ForegroundColor Cyan
 }
@@ -363,73 +633,52 @@ function Send-KeyCombo([string]$combo) {
   return $true
 }
 
-function Capture-ScreenBinary([bool]$fastMotion) {
-  $capG.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-  $hdc = $capG.GetHdc()
-  try {
-    [DeskBridgeWin32]::DrawCursor($hdc, $bounds.X, $bounds.Y)
-  } finally {
-    $capG.ReleaseHdc($hdc)
-  }
+# ClientWebSocket allows one send at a time. Frames are sent asynchronously so the loop keeps
+# handling input during the upload; anything else waits for the in-progress send first.
+$script:sendTask = $null
 
-  $capMs.SetLength(0)
-  if ($fastMotion -and $null -ne $script:fastBmp -and $null -ne $script:fastG) {
-    $script:fastG.DrawImage($capBmp, 0, 0, $script:fastW, $script:fastH)
-    $script:fastBmp.Save($capMs, $jpegCodec, $script:fastEncoderParams)
-  } elseif ($null -ne $script:scaledBmp -and $null -ne $script:scaledG) {
-    $script:scaledG.DrawImage($capBmp, 0, 0, $script:targetW, $script:targetH)
-    $script:scaledBmp.Save($capMs, $jpegCodec, $encoderParams)
-  } else {
-    $capBmp.Save($capMs, $jpegCodec, $encoderParams)
-  }
-
-  $len = [int]$capMs.Length
-  $buf = $capMs.GetBuffer()
-  $sig = if ($fastMotion) { "f:$len" } else { "h:$len" }
-  if ($len -gt 64) {
-    $step = [Math]::Max(1, [int]($len / 32))
-    for ($i = 0; $i -lt $len; $i += $step) {
-      $sig += ":$($buf[$i])"
-    }
-  }
-  return @{
-    length = $len
-    sig = $sig
+function Wait-PendingSend {
+  if ($null -ne $script:sendTask) {
+    try { $script:sendTask.Wait() } finally { $script:sendTask = $null }
   }
 }
 
 function Send-WsJson($ws, $obj) {
+  Wait-PendingSend
   $json = $jsonSerializer.Serialize($obj)
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
   $seg = New-Object System.ArraySegment[byte]($bytes, 0, $bytes.Length)
   $ws.SendAsync($seg, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).Wait()
 }
 
-function Send-WsBinaryFrame($ws, [string]$hid, [int]$seq, [string]$activeWin, [long]$ts, [System.IO.MemoryStream]$jpegMs) {
+# Starts sending a tiled (v2) frame; see src/lib/frameProtocol.ts for the format.
+function Start-FrameSend($ws, $frame, [int]$seq, [string]$activeWin, $stats) {
   $metaJson = $jsonSerializer.Serialize(@{
-    hostId = $hid
+    hostId = $HostId
     seq = $seq
     activeWindow = $activeWin
-    timestamp = $ts
+    timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    w = $frame.Width
+    h = $frame.Height
+    key = $frame.Key
+    r = $frame.Rects
+    stats = $stats
   })
   $metaBytes = [System.Text.Encoding]::UTF8.GetBytes($metaJson)
   $metaLen = $metaBytes.Length
-  $jpegLen = [int]$jpegMs.Length
-  $totalLen = 4 + $metaLen + $jpegLen
-
+  $totalLen = 4 + $metaLen + $frame.DataLength
   if ($totalLen -gt $script:sendBuf.Length) {
-    $script:sendBuf = New-Object byte[] ($totalLen + 65536)
+    $script:sendBuf = New-Object byte[] ($totalLen + 262144)
   }
-
   $script:sendBuf[0] = 0x44
-  $script:sendBuf[1] = 0x01
+  $script:sendBuf[1] = 0x02
   $script:sendBuf[2] = [byte](($metaLen -shr 8) -band 0xFF)
   $script:sendBuf[3] = [byte]($metaLen -band 0xFF)
   [Array]::Copy($metaBytes, 0, $script:sendBuf, 4, $metaLen)
-  [Array]::Copy($jpegMs.GetBuffer(), 0, $script:sendBuf, 4 + $metaLen, $jpegLen)
-
+  [Array]::Copy($frame.Data, 0, $script:sendBuf, 4 + $metaLen, $frame.DataLength)
   $seg = New-Object System.ArraySegment[byte]($script:sendBuf, 0, $totalLen)
-  $ws.SendAsync($seg, [System.Net.WebSockets.WebSocketMessageType]::Binary, $true, [System.Threading.CancellationToken]::None).Wait()
+  $script:sendTask = $ws.SendAsync($seg, [System.Net.WebSockets.WebSocketMessageType]::Binary, $true, [System.Threading.CancellationToken]::None)
+  return $totalLen
 }
 
 function Handle-RemoteInput($evt) {
@@ -516,9 +765,9 @@ function Handle-RemoteInput($evt) {
       [System.Windows.Forms.Clipboard]::SetText([string]$evt.text)
     }
     'quality' {
-      $mw = if ($null -ne $evt.maxWidth) { [int]$evt.maxWidth } else { 1280 }
-      $jq = if ($null -ne $evt.jpegQuality) { [int]$evt.jpegQuality } else { 68 }
-      Update-CaptureConfig $mw $jq
+      $mw = if ($null -ne $evt.maxWidth) { [int]$evt.maxWidth } else { 1152 }
+      $jq = if ($null -ne $evt.jpegQuality) { [int]$evt.jpegQuality } else { 62 }
+      $script:streamer.SetQuality($mw, $jq)
     }
   }
 }
@@ -559,14 +808,15 @@ while ($true) {
 
     $buffer = New-Object byte[] 65536
     $recvMs = New-Object System.IO.MemoryStream
-    $lastFrame = [DateTime]::MinValue
-    $lastFrameSentAt = [DateTime]::MinValue
-    $motionUntil = [DateTime]::MinValue
-    $lastWasMotion = $false
-    $lastSig = ''
+    $script:sendTask = $null
+    $script:streamer.Paused = $true
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $frameSeq = 0
-    $lastAckSeq = 0
-    $inputDirty = $false
+    $inFlight = @{}          # seq -> send time (ms)
+    $rttMs = 0.0             # smoothed send -> ack round trip
+    $kbps = 0.0              # smoothed upload rate
+    $bytesWindow = 0
+    $rateWindowStart = 0
     $controllers = 0
 
     $recvTask = $null
@@ -615,22 +865,29 @@ while ($true) {
             Write-Host ""
           } elseif ($msg.event -eq 'host:controller_count') {
             $controllers = [int]$msg.payload.count
-            $lastAckSeq = $frameSeq
-            $lastSig = ''
+            $inFlight.Clear()
+            $script:streamer.Paused = ($controllers -le 0)
+            if ($controllers -gt 0) { $script:streamer.RequestKeyframe() }
+          } elseif ($msg.event -eq 'host:keyframe_request') {
+            $script:streamer.RequestKeyframe()
           } elseif ($msg.event -eq 'host:frame_ack') {
             if ($null -ne $msg.payload.seq) {
               $ackSeq = [int]$msg.payload.seq
-              if ($ackSeq -gt $lastAckSeq) { $lastAckSeq = $ackSeq }
-            } else {
-              $lastAckSeq = $frameSeq
+              # Relay-generated acks (frame reached no controller) free the window but say
+              # nothing about the end-to-end path, so they are not RTT samples.
+              $isRelayAck = $msg.payload.ContainsKey('relay') -and $msg.payload.relay -eq $true
+              if ($inFlight.ContainsKey($ackSeq) -and -not $isRelayAck) {
+                $sample = $clock.ElapsedMilliseconds - $inFlight[$ackSeq]
+                $rttMs = if ($rttMs -le 0) { [double]$sample } else { 0.7 * $rttMs + 0.3 * $sample }
+              }
+              foreach ($k in @($inFlight.Keys)) { if ($k -le $ackSeq) { $inFlight.Remove($k) } }
             }
           } elseif ($msg.event -eq 'client:input') {
             $ev = $msg.payload
+            if ($ev.type -ne 'quality') { $script:streamer.NotifyActivity() }
             if ($ev.type -eq 'mousemove' -and $ev.relative -eq $true) {
               $pendingRelDx += [int]$ev.dx
               $pendingRelDy += [int]$ev.dy
-              $inputDirty = $true
-              $motionUntil = ([DateTime]::UtcNow).AddMilliseconds(280)
             } else {
               if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
                 $pos = [System.Windows.Forms.Cursor]::Position
@@ -644,12 +901,6 @@ while ($true) {
                 Handle-RemoteInput $ev
               } catch {
                 Write-Host "Input '$($ev.type)' failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
-              }
-              $inputDirty = $true
-              if ($ev.type -ne 'quality') {
-                $motionUntil = ([DateTime]::UtcNow).AddMilliseconds(280)
-              } else {
-                $lastSig = ''
               }
             }
           }
@@ -668,8 +919,6 @@ while ($true) {
             monitors = (Get-MonitorList)
           }
         }
-        $lastSig = ''
-        $inputDirty = $true
       }
 
       if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
@@ -679,34 +928,58 @@ while ($true) {
         [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
       }
 
-      $now = [DateTime]::UtcNow
-      $inFlight = $frameSeq - $lastAckSeq
-      $canSendByAck = ($inFlight -lt 2) -or (($now - $lastFrameSentAt).TotalMilliseconds -ge 450)
-      $elapsedMs = ($now - $lastFrame).TotalMilliseconds
-      $inMotion = ($now -lt $motionUntil)
-      $minInterval = if ($inputDirty -or $inMotion) { 30 } else { $FrameIntervalMs }
+      # A failed async send means the connection is gone: surface it to the reconnect logic.
+      if ($null -ne $script:sendTask -and $script:sendTask.IsCompleted) {
+        $done = $script:sendTask
+        $script:sendTask = $null
+        if ($done.IsFaulted) { throw $done.Exception.InnerException }
+      }
 
-      if ($controllers -gt 0 -and $canSendByAck -and $elapsedMs -ge $minInterval) {
-        $useFast = $inMotion
-        $cap = Capture-ScreenBinary $useFast
-        $needSettle = ($lastWasMotion -and (-not $useFast))
-        $changed = ($cap.sig -ne $lastSig) -or $inputDirty -or $needSettle -or ($elapsedMs -ge 1000)
-        if ($changed) {
+      $nowMs = $clock.ElapsedMilliseconds
+      # If acks stop arriving (e.g. a controller vanished mid-frame), do not stall forever.
+      if ($inFlight.Count -ge $MaxInFlight) {
+        $oldest = ($inFlight.Values | Measure-Object -Minimum).Minimum
+        if (($nowMs - $oldest) -gt 1500) { $inFlight.Clear() }
+      }
+
+      if ($controllers -gt 0 -and $null -eq $script:sendTask -and $inFlight.Count -lt $MaxInFlight) {
+        $frame = $script:streamer.TryTakeFrame()
+        if ($null -ne $frame) {
           $frameSeq++
-          $activeWin = [DeskBridgeWin32]::GetActiveWindowTitle()
-          $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-          Send-WsBinaryFrame $ws $HostId $frameSeq $activeWin $ts $capMs
-          $lastSig = $cap.sig
-          $lastWasMotion = $useFast
-          $lastFrame = $now
-          $lastFrameSentAt = $now
-          $inputDirty = $false
+          $stats = @{
+            cap = [Math]::Round($frame.CaptureMs, 1)
+            enc = [Math]::Round($frame.EncodeMs, 1)
+            kbps = [Math]::Round($kbps)
+            q = $frame.Quality
+            mw = $frame.Width
+            ch = $frame.ChangedTiles
+            tt = $frame.TotalTiles
+            inf = $inFlight.Count
+          }
+          # Only report RTT once measured; the relay's adaptive quality treats it as a real sample.
+          if ($rttMs -gt 0) { $stats.rtt = [Math]::Round($rttMs) }
+          $sent = Start-FrameSend $ws $frame $frameSeq ([DeskBridgeWin32]::GetActiveWindowTitle()) $stats
+          $inFlight[$frameSeq] = $nowMs
+          $bytesWindow += $sent
         }
+      }
+
+      if (($nowMs - $rateWindowStart) -ge 1000) {
+        $instant = ($bytesWindow * 8.0) / ($nowMs - $rateWindowStart)
+        $kbps = if ($kbps -le 0) { $instant } else { 0.6 * $kbps + 0.4 * $instant }
+        $bytesWindow = 0
+        $rateWindowStart = $nowMs
+      }
+      if ($script:streamer.LastError) {
+        Write-Host "Capture error: $($script:streamer.LastError)" -ForegroundColor DarkYellow
+        $script:streamer.LastError = ''
       }
     }
   } catch {
     Write-Host "Connection interrupted: $($_.Exception.Message). Reconnecting in 4s..." -ForegroundColor Red
   } finally {
+    $script:streamer.Paused = $true
+    $script:sendTask = $null
     $ws.Dispose()
   }
   if ($script:AuthRejected) {
