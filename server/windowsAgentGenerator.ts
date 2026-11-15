@@ -22,9 +22,9 @@ param(
   [string]$GroupLabel = '${safeGroup}',
   [string]$RelayWsUrl = '${safeWsUrl}',
   [string]$AppBaseUrl = '${safeAppUrl}',
-  [int]$FrameIntervalMs = 130,
-  [int]$JpegQuality = 78,
-  [int]$MaxStreamWidth = 1600
+  [int]$FrameIntervalMs = 100,
+  [int]$JpegQuality = 68,
+  [int]$MaxStreamWidth = 1280
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,6 +67,31 @@ public static class DeskBridgeWin32 {
   public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
   public const uint MOUSEEVENTF_WHEEL = 0x0800;
   public const uint KEYEVENTF_KEYUP = 0x0002;
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct POINT { public int x; public int y; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct CURSORINFO {
+    public int cbSize;
+    public int flags;
+    public IntPtr hCursor;
+    public POINT ptScreenPos;
+  }
+
+  [DllImport("user32.dll")]
+  public static extern bool GetCursorInfo(ref CURSORINFO pci);
+
+  [DllImport("user32.dll")]
+  public static extern bool DrawIconEx(IntPtr hdc, int xLeft, int yTop, IntPtr hIcon, int cxWidth, int cyWidth, int istepIfAniCur, IntPtr hbrFlickerFreeDraw, int diFlags);
+
+  public static void DrawCursor(IntPtr hdc, int originX, int originY) {
+    CURSORINFO ci = new CURSORINFO();
+    ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    if (GetCursorInfo(ref ci) && ci.flags == 1 && ci.hCursor != IntPtr.Zero) {
+      DrawIconEx(hdc, ci.ptScreenPos.x - originX, ci.ptScreenPos.y - originY, ci.hCursor, 0, 0, 0, IntPtr.Zero, 0x0003);
+    }
+  }
 
   public static string GetActiveWindowTitle() {
     IntPtr handle = GetForegroundWindow();
@@ -130,8 +155,15 @@ function Update-CaptureConfig([int]$maxW, [int]$quality) {
 
 Update-CaptureConfig $MaxStreamWidth $JpegQuality
 
-function Capture-ScreenBase64 {
+function Capture-ScreenWithSig {
   $capG.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+  $hdc = $capG.GetHdc()
+  try {
+    [DeskBridgeWin32]::DrawCursor($hdc, $bounds.X, $bounds.Y)
+  } finally {
+    $capG.ReleaseHdc($hdc)
+  }
+
   $capMs.SetLength(0)
   if ($null -ne $script:scaledBmp -and $null -ne $script:scaledG) {
     $script:scaledG.DrawImage($capBmp, 0, 0, $script:targetW, $script:targetH)
@@ -139,8 +171,21 @@ function Capture-ScreenBase64 {
   } else {
     $capBmp.Save($capMs, $jpegCodec, $encoderParams)
   }
-  $b64 = [Convert]::ToBase64String($capMs.GetBuffer(), 0, [int]$capMs.Length)
-  return "data:image/jpeg;base64,$b64"
+
+  $len = [int]$capMs.Length
+  $buf = $capMs.GetBuffer()
+  $sig = "$len"
+  if ($len -gt 64) {
+    $step = [Math]::Max(1, [int]($len / 32))
+    for ($i = 0; $i -lt $len; $i += $step) {
+      $sig += ":$($buf[$i])"
+    }
+  }
+  $b64 = [Convert]::ToBase64String($buf, 0, $len)
+  return @{
+    data = "data:image/jpeg;base64,$b64"
+    sig = $sig
+  }
 }
 
 function Send-WsJson($ws, $obj) {
@@ -230,8 +275,8 @@ function Handle-RemoteInput($evt) {
       [System.Windows.Forms.Clipboard]::SetText([string]$evt.text)
     }
     'quality' {
-      $mw = if ($null -ne $evt.maxWidth) { [int]$evt.maxWidth } else { 1600 }
-      $jq = if ($null -ne $evt.jpegQuality) { [int]$evt.jpegQuality } else { 78 }
+      $mw = if ($null -ne $evt.maxWidth) { [int]$evt.maxWidth } else { 1280 }
+      $jq = if ($null -ne $evt.jpegQuality) { [int]$evt.jpegQuality } else { 68 }
       Update-CaptureConfig $mw $jq
     }
   }
@@ -267,6 +312,11 @@ while ($true) {
     $buffer = New-Object byte[] 65536
     $recvMs = New-Object System.IO.MemoryStream
     $lastFrame = [DateTime]::MinValue
+    $lastFrameSentAt = [DateTime]::MinValue
+    $lastSig = ''
+    $inFlightFrames = 0
+    $frameSeq = 0
+    $inputDirty = $false
     $controllers = 0
 
     $recvTask = $null
@@ -276,12 +326,12 @@ while ($true) {
       $pendingRelDx = 0
       $pendingRelDy = 0
 
-      while ($drained -lt 60) {
+      while ($drained -lt 80) {
         if ($null -eq $recvTask) {
           $seg = New-Object System.ArraySegment[byte]($buffer, 0, $buffer.Length)
           $recvTask = $ws.ReceiveAsync($seg, [System.Threading.CancellationToken]::None)
         }
-        $waitMs = if ($drained -eq 0) { 3 } else { 0 }
+        $waitMs = if ($drained -eq 0) { 2 } else { 0 }
         if (-not $recvTask.Wait($waitMs)) {
           break
         }
@@ -308,11 +358,16 @@ while ($true) {
             Write-Host ""
           } elseif ($msg.event -eq 'host:controller_count') {
             $controllers = [int]$msg.payload.count
+            $inFlightFrames = 0
+            $lastSig = ''
+          } elseif ($msg.event -eq 'host:frame_ack') {
+            $inFlightFrames = 0
           } elseif ($msg.event -eq 'client:input') {
             $ev = $msg.payload
             if ($ev.type -eq 'mousemove' -and $ev.relative -eq $true) {
               $pendingRelDx += [int]$ev.dx
               $pendingRelDy += [int]$ev.dy
+              $inputDirty = $true
             } else {
               if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
                 $pos = [System.Windows.Forms.Cursor]::Position
@@ -323,6 +378,7 @@ while ($true) {
                 $pendingRelDy = 0
               }
               Handle-RemoteInput $ev
+              $inputDirty = $true
             }
           }
         }
@@ -337,19 +393,32 @@ while ($true) {
       }
 
       $now = [DateTime]::UtcNow
-      if ($controllers -gt 0 -and ($now - $lastFrame).TotalMilliseconds -ge $FrameIntervalMs) {
-        $frame = Capture-ScreenBase64
-        $activeWin = [DeskBridgeWin32]::GetActiveWindowTitle()
-        Send-WsJson $ws @{
-          event = 'host:frame'
-          payload = @{
-            hostId = $HostId
-            frame = $frame
-            activeWindow = $activeWin
-            timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+      $canSendByAck = ($inFlightFrames -eq 0) -or (($now - $lastFrameSentAt).TotalMilliseconds -ge 1200)
+      $elapsedMs = ($now - $lastFrame).TotalMilliseconds
+      $minInterval = if ($inputDirty) { 45 } else { $FrameIntervalMs }
+
+      if ($controllers -gt 0 -and $canSendByAck -and $elapsedMs -ge $minInterval) {
+        $cap = Capture-ScreenWithSig
+        $changed = ($cap.sig -ne $lastSig) -or $inputDirty -or ($elapsedMs -ge 1200)
+        if ($changed) {
+          $frameSeq++
+          $activeWin = [DeskBridgeWin32]::GetActiveWindowTitle()
+          Send-WsJson $ws @{
+            event = 'host:frame'
+            payload = @{
+              hostId = $HostId
+              frame = $cap.data
+              seq = $frameSeq
+              activeWindow = $activeWin
+              timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            }
           }
+          $lastSig = $cap.sig
+          $lastFrame = $now
+          $lastFrameSentAt = $now
+          $inFlightFrames = 1
+          $inputDirty = $false
         }
-        $lastFrame = $now
       }
     }
   } catch {

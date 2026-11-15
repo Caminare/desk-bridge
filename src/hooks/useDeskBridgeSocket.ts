@@ -93,6 +93,8 @@ export function useDeskBridgeSocket() {
         const data = msg.payload as {
           hostId: string;
           frame: string;
+          seq?: number;
+          timestamp?: number;
           activeWindow?: string;
           cpuUsage?: number;
           memoryUsage?: number;
@@ -100,6 +102,16 @@ export function useDeskBridgeSocket() {
         if (data.frame) {
           setFramesByHost((prev) => ({ ...prev, [data.hostId]: data.frame }));
         }
+        window.requestAnimationFrame(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                event: 'client:frame_ack',
+                payload: { hostId: data.hostId, seq: data.seq, timestamp: data.timestamp },
+              }),
+            );
+          }
+        });
         setHosts((prev) =>
           prev.map((h) =>
             h.hostId === data.hostId

@@ -456,12 +456,25 @@ async function startServer() {
             sendJson(ctrl, 'host:frame', {
               hostId,
               frame,
+              seq: payload.seq,
               activeWindow: entry.profile.activeWindow,
               cpuUsage: entry.profile.cpuUsage,
               memoryUsage: entry.profile.memoryUsage,
               timestamp: payload.timestamp || Date.now(),
             });
           }
+        }
+        return;
+      }
+
+      if (event === 'client:frame_ack') {
+        const hostId = String(payload.hostId || '');
+        const entry = hosts.get(hostId);
+        if (entry?.ws && entry.ws.readyState === WebSocket.OPEN) {
+          sendJson(entry.ws, 'host:frame_ack', {
+            seq: payload.seq,
+            timestamp: payload.timestamp,
+          });
         }
         return;
       }

@@ -31,9 +31,9 @@ import { AIAssistantPanel } from './AIAssistantPanel';
 type StreamQualityPreset = 'sd' | 'hd' | 'ultra';
 
 const QUALITY_PRESETS: Record<StreamQualityPreset, { label: string; maxWidth: number; jpegQuality: number }> = {
-  sd: { label: 'SD', maxWidth: 1280, jpegQuality: 60 },
-  hd: { label: 'HD', maxWidth: 1600, jpegQuality: 78 },
-  ultra: { label: 'Ultra', maxWidth: 2560, jpegQuality: 88 },
+  sd: { label: 'SD', maxWidth: 1024, jpegQuality: 55 },
+  hd: { label: 'HD', maxWidth: 1280, jpegQuality: 68 },
+  ultra: { label: 'Ultra', maxWidth: 1600, jpegQuality: 80 },
 };
 
 interface TouchControlDeckProps {
@@ -64,11 +64,12 @@ export function TouchControlDeck({
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [showMobileAI, setShowMobileAI] = useState(false);
   const [textBuffer, setTextBuffer] = useState('');
-  const [liveTyping, setLiveTyping] = useState(false);
-  const [sensitivity, setSensitivity] = useState(2.2);
+  const [liveTyping, setLiveTyping] = useState(true);
+  const [sensitivity, setSensitivity] = useState(3.0);
   const [tapFeedback, setTapFeedback] = useState<{ x: number; y: number; id: number } | null>(null);
 
   const streamImgRef = useRef<HTMLImageElement | null>(null);
+  const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const enteredNativeFsRef = useRef(false);
   const activePointersRef = useRef<Set<number>>(new Set());
   const twoFingerTapRef = useRef<boolean>(false);
@@ -125,9 +126,58 @@ export function TouchControlDeck({
       }
     };
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isFullscreen) {
-        setIsFullscreen(false);
-        setHudHidden(false);
+      if (!isFullscreen || !activeHost || e.isComposing) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const lower = e.key.toLowerCase();
+        if (lower === 'c') {
+          e.preventDefault();
+          onSendInput({ type: 'hotkey', combo: 'Ctrl+C' }, activeHost.hostId, 'keyboard');
+          return;
+        }
+        if (lower === 'v') {
+          e.preventDefault();
+          onSendInput({ type: 'hotkey', combo: 'Ctrl+V' }, activeHost.hostId, 'keyboard');
+          return;
+        }
+        if (lower === 's') {
+          e.preventDefault();
+          onSendInput({ type: 'hotkey', combo: 'Ctrl+S' }, activeHost.hostId, 'keyboard');
+          return;
+        }
+      }
+
+      if (e.altKey && e.key === 'Tab') {
+        e.preventDefault();
+        onSendInput({ type: 'hotkey', combo: 'Alt+Tab' }, activeHost.hostId, 'keyboard');
+        return;
+      }
+
+      const specialKeys = new Set([
+        'Enter',
+        'Tab',
+        'Escape',
+        'Backspace',
+        'Delete',
+        'ArrowUp',
+        'ArrowDown',
+        'ArrowLeft',
+        'ArrowRight',
+      ]);
+      if (specialKeys.has(e.key)) {
+        e.preventDefault();
+        onSendInput({ type: 'key', key: e.key }, activeHost.hostId, 'keyboard');
+        return;
+      }
+
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        onSendInput({ type: 'type', text: e.key }, activeHost.hostId, 'keyboard');
       }
     };
     document.addEventListener('fullscreenchange', handleFsChange);
@@ -138,7 +188,7 @@ export function TouchControlDeck({
       document.removeEventListener('webkitfullscreenchange', handleFsChange);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isFullscreen]);
+  }, [isFullscreen, activeHost, onSendInput]);
 
   // Call requestFullscreen synchronously inside user gesture for iPadOS Safari + Android Chrome
   const enterFullscreen = () => {
@@ -286,7 +336,7 @@ export function TouchControlDeck({
     lastPointerRef.current.y = e.clientY;
 
     const speed = Math.hypot(rawDx, rawDy);
-    const accel = speed > 14 ? 1.55 : speed > 6 ? 1.2 : 1.0;
+    const accel = speed > 12 ? 1.7 : speed > 5 ? 1.25 : 1.0;
     const dx = Math.round(rawDx * sensitivity * accel);
     const dy = Math.round(rawDy * sensitivity * accel);
 
@@ -295,7 +345,7 @@ export function TouchControlDeck({
       pendingMoveRef.current.dx += dx;
       pendingMoveRef.current.dy += dy;
       if (moveFlushTimerRef.current === null) {
-        moveFlushTimerRef.current = window.setTimeout(flushPendingMove, 22);
+        moveFlushTimerRef.current = window.setTimeout(flushPendingMove, 16);
       }
     }
   };
@@ -331,21 +381,59 @@ export function TouchControlDeck({
 
   const handleSendTextSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!textBuffer) return;
+    if (liveTyping) {
+      onSendInput({ type: 'key', key: 'Enter' }, activeHost.hostId, 'keyboard');
+      setTextBuffer('');
+      return;
+    }
+    if (!textBuffer) {
+      onSendInput({ type: 'key', key: 'Enter' }, activeHost.hostId, 'keyboard');
+      return;
+    }
     onSendInput({ type: 'type', text: textBuffer }, activeHost.hostId, 'keyboard');
     setTextBuffer('');
   };
 
   const handleTextChange = (val: string) => {
     if (liveTyping) {
-      if (val.length > textBuffer.length) {
-        const diff = val.slice(textBuffer.length);
-        onSendInput({ type: 'type', text: diff }, activeHost.hostId, 'keyboard');
-      } else if (val.length < textBuffer.length) {
+      let common = 0;
+      const minLen = Math.min(textBuffer.length, val.length);
+      while (common < minLen && textBuffer[common] === val[common]) {
+        common++;
+      }
+      const deletions = textBuffer.length - common;
+      for (let i = 0; i < deletions; i++) {
         onSendInput({ type: 'key', key: 'Backspace' }, activeHost.hostId, 'keyboard');
+      }
+      const addition = val.slice(common);
+      if (addition.length > 0) {
+        onSendInput({ type: 'type', text: addition }, activeHost.hostId, 'keyboard');
       }
     }
     setTextBuffer(val);
+  };
+
+  const handleKeyboardInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && textBuffer.length === 0) {
+      e.preventDefault();
+      onSendInput({ type: 'key', key: 'Backspace' }, activeHost.hostId, 'keyboard');
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      onSendInput({ type: 'key', key: 'Tab' }, activeHost.hostId, 'keyboard');
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      onSendInput({ type: 'key', key: 'Escape' }, activeHost.hostId, 'keyboard');
+    }
+  };
+
+  const toggleKeyboardDrawer = () => {
+    const next = !showKeyboard;
+    setShowKeyboard(next);
+    if (next) {
+      keyboardInputRef.current?.focus();
+    } else {
+      keyboardInputRef.current?.blur();
+    }
   };
 
   const renderDesktopStreamViewport = (fullscreen: boolean) => {
@@ -407,16 +495,24 @@ export function TouchControlDeck({
   const renderKeyboardDrawer = (compact = false) => (
     <div
       className={`rounded-2xl border border-slate-200 dark:border-slate-800 ${
-        compact ? 'bg-slate-900/95 backdrop-blur-md p-3' : 'bg-white dark:bg-slate-900 p-4'
+        compact ? 'bg-slate-900/95 backdrop-blur-md p-3 shadow-2xl border-slate-700/80' : 'bg-white dark:bg-slate-900 p-4'
       } space-y-2.5`}
     >
       <form onSubmit={handleSendTextSubmit} className="flex items-center gap-2">
         <input
+          ref={compact ? keyboardInputRef : undefined}
           type="text"
           value={textBuffer}
           onChange={(e) => handleTextChange(e.target.value)}
-          placeholder="Type text to send to Windows..."
-          className={`flex-1 min-h-[44px] px-3.5 py-2 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 ${
+          onKeyDown={handleKeyboardInputKeyDown}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
+          enterKeyHint="send"
+          tabIndex={compact && !showKeyboard ? -1 : 0}
+          placeholder={liveTyping ? 'Type live keystrokes to Windows...' : 'Type text to send to Windows...'}
+          className={`flex-1 min-h-[44px] px-3.5 py-2 rounded-xl border text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 ${
             compact
               ? 'bg-slate-950 border-slate-700 text-white'
               : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white'
@@ -427,8 +523,21 @@ export function TouchControlDeck({
           className="min-h-[44px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0"
         >
           <Send className="w-3.5 h-3.5" />
-          <span>Send</span>
+          <span>{liveTyping ? 'Enter' : 'Send'}</span>
         </button>
+        {compact && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowKeyboard(false);
+              keyboardInputRef.current?.blur();
+            }}
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl bg-slate-800 text-slate-300 hover:text-white shrink-0"
+            aria-label="Close keyboard"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </form>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -438,15 +547,34 @@ export function TouchControlDeck({
               key={keyName}
               type="button"
               onClick={() => onSendInput({ type: 'key', key: keyName }, activeHost.hostId, 'keyboard')}
-              className="min-h-[38px] px-2.5 py-1 rounded-lg border border-slate-700/40 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-xs font-mono text-slate-800 dark:text-slate-200 hover:border-blue-500"
+              className={`min-h-[38px] px-2.5 py-1 rounded-lg border text-xs font-mono hover:border-blue-500 ${
+                compact
+                  ? 'border-slate-700 bg-slate-950 text-slate-200'
+                  : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
+              }`}
             >
               {keyName === 'Escape' ? 'Esc' : keyName}
             </button>
           ))}
           <button
             type="button"
+            onClick={() => onSendInput({ type: 'type', text: ' ' }, activeHost.hostId, 'keyboard')}
+            className={`min-h-[38px] px-2.5 py-1 rounded-lg border text-xs font-mono hover:border-blue-500 ${
+              compact
+                ? 'border-slate-700 bg-slate-950 text-slate-200'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
+            }`}
+          >
+            Space
+          </button>
+          <button
+            type="button"
             onClick={() => onSendInput({ type: 'key', key: 'ArrowLeft' }, activeHost.hostId, 'keyboard')}
-            className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-700/40 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200"
+            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
+              compact
+                ? 'border-slate-700 bg-slate-950 text-slate-200'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
+            }`}
             aria-label="Left arrow"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -454,7 +582,11 @@ export function TouchControlDeck({
           <button
             type="button"
             onClick={() => onSendInput({ type: 'key', key: 'ArrowUp' }, activeHost.hostId, 'keyboard')}
-            className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-700/40 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200"
+            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
+              compact
+                ? 'border-slate-700 bg-slate-950 text-slate-200'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
+            }`}
             aria-label="Up arrow"
           >
             <ArrowUp className="w-4 h-4" />
@@ -462,7 +594,11 @@ export function TouchControlDeck({
           <button
             type="button"
             onClick={() => onSendInput({ type: 'key', key: 'ArrowDown' }, activeHost.hostId, 'keyboard')}
-            className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-700/40 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200"
+            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
+              compact
+                ? 'border-slate-700 bg-slate-950 text-slate-200'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
+            }`}
             aria-label="Down arrow"
           >
             <ArrowDown className="w-4 h-4" />
@@ -470,14 +606,18 @@ export function TouchControlDeck({
           <button
             type="button"
             onClick={() => onSendInput({ type: 'key', key: 'ArrowRight' }, activeHost.hostId, 'keyboard')}
-            className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-slate-700/40 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200"
+            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
+              compact
+                ? 'border-slate-700 bg-slate-950 text-slate-200'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
+            }`}
             aria-label="Right arrow"
           >
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>
 
-        <label className="inline-flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 cursor-pointer">
+        <label className="inline-flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
           <input
             type="checkbox"
             checked={liveTyping}
@@ -504,8 +644,8 @@ export function TouchControlDeck({
           <span>Speed</span>
           <input
             type="range"
-            min={0.8}
-            max={4.5}
+            min={1.0}
+            max={6.0}
             step={0.2}
             value={sensitivity}
             onChange={(e) => setSensitivity(Number(e.target.value))}
@@ -592,15 +732,21 @@ export function TouchControlDeck({
         >
           {renderDesktopStreamViewport(true)}
 
+          {/* Top-positioned fullscreen keyboard drawer stays above Android/iPad OS virtual keyboards */}
+          <div
+            aria-hidden={!showKeyboard}
+            className={`absolute top-2 left-2 right-2 z-30 flex justify-center pt-safe transition-opacity duration-150 ${
+              showKeyboard ? 'pointer-events-none opacity-100' : 'pointer-events-none opacity-0 -translate-y-4'
+            }`}
+          >
+            <div className={`${showKeyboard ? 'pointer-events-auto' : 'pointer-events-none'} w-full max-w-lg`}>
+              {renderKeyboardDrawer(true)}
+            </div>
+          </div>
+
           {/* Bottom-positioned floating HUD keeps the entire top Windows titlebar / Edge tabs 100% clear */}
           {!hudHidden ? (
             <div className="absolute bottom-2 left-2 right-2 z-10 pointer-events-none flex flex-col items-center gap-2 pb-safe">
-              {showKeyboard && (
-                <div className="pointer-events-auto w-full max-w-lg">
-                  {renderKeyboardDrawer(true)}
-                </div>
-              )}
-
               {inputMode === 'trackpad' && showFullscreenTrackpad && (
                 <div className="pointer-events-auto w-full max-w-md rounded-2xl overflow-hidden border border-slate-700/70 shadow-2xl">
                   {renderTrackpadPanel(true)}
@@ -716,7 +862,7 @@ export function TouchControlDeck({
 
                 <button
                   type="button"
-                  onClick={() => setShowKeyboard((k) => !k)}
+                  onClick={toggleKeyboardDrawer}
                   className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl shrink-0 ${
                     showKeyboard ? 'bg-blue-600 text-white' : 'bg-slate-800/90 text-slate-200'
                   }`}
