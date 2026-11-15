@@ -213,6 +213,8 @@ public class DeskBridgeFrame {
   public int ChangedTiles;
   public int TotalTiles;
   public int Quality;
+  // True when captured with the one-call GDI StretchBlt path, false for the GDI+ fallback.
+  public bool FastCapture;
   internal byte[] Pixels;
   internal int Generation;
   internal int KeyFor;
@@ -232,6 +234,43 @@ public class DeskBridgeStreamer {
 
   [DllImport("user32.dll")]
   static extern bool DrawIconEx(IntPtr hdc, int xLeft, int yTop, IntPtr hIcon, int cxWidth, int cyWidth, int istepIfAniCur, IntPtr hbrFlickerFreeDraw, int diFlags);
+
+  // ---- Fast capture: one GDI StretchBlt from the screen straight into a DIB section ----
+  [StructLayout(LayoutKind.Sequential)]
+  struct BITMAPINFOHEADER {
+    public int biSize; public int biWidth; public int biHeight; public short biPlanes; public short biBitCount;
+    public int biCompression; public int biSizeImage; public int biXPelsPerMeter; public int biYPelsPerMeter;
+    public int biClrUsed; public int biClrImportant;
+  }
+
+  [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+  [DllImport("user32.dll")] static extern int GetSystemMetrics(int nIndex);
+  [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+  [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr hdc);
+  [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
+  [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+  [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFOHEADER bmi, uint usage, out IntPtr bits, IntPtr section, uint offset);
+  [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr hdcDest, int xDest, int yDest, int wDest, int hDest, IntPtr hdcSrc, int xSrc, int ySrc, int wSrc, int hSrc, uint rop);
+  [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr hdcDest, int xDest, int yDest, int w, int h, IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
+  [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr hdc, int mode);
+  [DllImport("gdi32.dll")] static extern bool SetBrushOrgEx(IntPtr hdc, int x, int y, IntPtr oldPoint);
+  [DllImport("gdi32.dll")] static extern bool GdiFlush();
+
+  const uint SRCCOPY = 0x00CC0020;
+  const int HALFTONE = 4;
+  const int SM_CXCURSOR = 13;
+  const int SM_CYCURSOR = 14;
+
+  /// Set to false (automatically, on failure) to use the GDI+ CopyFromScreen fallback.
+  public volatile bool AllowFastCapture = true;
+  bool fastActive;
+  IntPtr memDC = IntPtr.Zero;
+  IntPtr dib = IntPtr.Zero;
+  IntPtr oldBitmap = IntPtr.Zero;
+  IntPtr dibBits = IntPtr.Zero;
+  Bitmap dibBitmap;
+  bool configured;
 
   readonly object gate = new object();
   readonly Stopwatch clock = Stopwatch.StartNew();
@@ -348,20 +387,14 @@ public class DeskBridgeStreamer {
   }
 
   void Configure(Rectangle b, int mw, int q) {
-    bool sizeChanged = b != curBounds || mw != curMaxWidth || capBmp == null;
+    bool sizeChanged = !configured || b != curBounds || mw != curMaxWidth;
     encParams = new EncoderParameters(1);
     encParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)q);
     if (!sizeChanged) return;
 
-    if (outG != null) outG.Dispose();
-    if (outBmp != null && outBmp != capBmp) outBmp.Dispose();
-    if (capG != null) capG.Dispose();
-    if (capBmp != null) capBmp.Dispose();
-
+    ReleaseCaptureResources();
     curBounds = b;
     curMaxWidth = mw;
-    capBmp = new Bitmap(b.Width, b.Height, PixelFormat.Format24bppRgb);
-    capG = Graphics.FromImage(capBmp);
     // mw is a 16:9-equivalent width: keep the same pixel budget on any aspect ratio so an
     // ultrawide or 4:3 screen gets as much detail as a 16:9 one.
     double aspect = b.Width / (double)b.Height;
@@ -369,6 +402,25 @@ public class DeskBridgeStreamer {
     int w = (int)Math.Round(Math.Sqrt(pixelBudget * aspect));
     w = Math.Min(Math.Max(320, w), b.Width);
     int h = (int)Math.Round(b.Height * (w / (double)b.Width));
+    outW = w;
+    outH = h;
+    configured = true;
+
+    if (AllowFastCapture) {
+      try {
+        SetupDib(w, h);
+        fastActive = true;
+        return;
+      } catch (Exception e) {
+        LastError = "Fast capture unavailable, using GDI+ fallback: " + e.Message;
+        AllowFastCapture = false;
+        ReleaseDib();
+      }
+    }
+
+    fastActive = false;
+    capBmp = new Bitmap(b.Width, b.Height, PixelFormat.Format24bppRgb);
+    capG = Graphics.FromImage(capBmp);
     if (w < b.Width) {
       outBmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
       outG = Graphics.FromImage(outBmp);
@@ -381,8 +433,87 @@ public class DeskBridgeStreamer {
       outBmp = capBmp;
       outG = null;
     }
-    outW = w;
-    outH = h;
+    stride = ReadStride();
+  }
+
+  // A top-down 24-bit DIB section at stream size. GDI scales the screen into it in one call,
+  // and a GDI+ Bitmap wraps the same memory for JPEG encoding, so nothing is copied twice.
+  void SetupDib(int w, int h) {
+    IntPtr screen = GetDC(IntPtr.Zero);
+    if (screen == IntPtr.Zero) throw new InvalidOperationException("GetDC failed");
+    try {
+      memDC = CreateCompatibleDC(screen);
+      if (memDC == IntPtr.Zero) throw new InvalidOperationException("CreateCompatibleDC failed");
+      BITMAPINFOHEADER bi = new BITMAPINFOHEADER();
+      bi.biSize = Marshal.SizeOf(typeof(BITMAPINFOHEADER));
+      bi.biWidth = w;
+      bi.biHeight = -h;
+      bi.biPlanes = 1;
+      bi.biBitCount = 24;
+      dib = CreateDIBSection(screen, ref bi, 0, out dibBits, IntPtr.Zero, 0);
+      if (dib == IntPtr.Zero || dibBits == IntPtr.Zero) throw new InvalidOperationException("CreateDIBSection failed");
+      oldBitmap = SelectObject(memDC, dib);
+      SetStretchBltMode(memDC, HALFTONE);
+      SetBrushOrgEx(memDC, 0, 0, IntPtr.Zero);
+    } finally {
+      ReleaseDC(IntPtr.Zero, screen);
+    }
+    stride = ((w * 24 + 31) / 32) * 4;
+    dibBitmap = new Bitmap(w, h, stride, PixelFormat.Format24bppRgb, dibBits);
+    outBmp = dibBitmap;
+    outG = null;
+  }
+
+  void ReleaseDib() {
+    if (dibBitmap != null) { dibBitmap.Dispose(); dibBitmap = null; }
+    if (memDC != IntPtr.Zero) {
+      if (oldBitmap != IntPtr.Zero) SelectObject(memDC, oldBitmap);
+      DeleteDC(memDC);
+      memDC = IntPtr.Zero;
+      oldBitmap = IntPtr.Zero;
+    }
+    if (dib != IntPtr.Zero) { DeleteObject(dib); dib = IntPtr.Zero; }
+    dibBits = IntPtr.Zero;
+  }
+
+  void ReleaseCaptureResources() {
+    if (outBmp == dibBitmap) outBmp = null;
+    ReleaseDib();
+    if (outG != null) { outG.Dispose(); outG = null; }
+    if (outBmp != null && outBmp != capBmp) outBmp.Dispose();
+    outBmp = null;
+    if (capG != null) { capG.Dispose(); capG = null; }
+    if (capBmp != null) { capBmp.Dispose(); capBmp = null; }
+    fastActive = false;
+  }
+
+  void CaptureFast(byte[] dst) {
+    IntPtr screen = GetDC(IntPtr.Zero);
+    if (screen == IntPtr.Zero) throw new InvalidOperationException("GetDC failed");
+    try {
+      bool ok = (outW == curBounds.Width && outH == curBounds.Height)
+        ? BitBlt(memDC, 0, 0, outW, outH, screen, curBounds.X, curBounds.Y, SRCCOPY)
+        : StretchBlt(memDC, 0, 0, outW, outH, screen, curBounds.X, curBounds.Y, curBounds.Width, curBounds.Height, SRCCOPY);
+      if (!ok) throw new InvalidOperationException("StretchBlt failed");
+    } finally {
+      ReleaseDC(IntPtr.Zero, screen);
+    }
+
+    // Cursor, drawn at stream scale.
+    CURSORINFO ci = new CURSORINFO();
+    ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    if (GetCursorInfo(ref ci) && ci.flags == 1 && ci.hCursor != IntPtr.Zero) {
+      double sx = outW / (double)curBounds.Width;
+      double sy = outH / (double)curBounds.Height;
+      int cw = Math.Max(12, (int)Math.Round(GetSystemMetrics(SM_CXCURSOR) * sx));
+      int ch = Math.Max(12, (int)Math.Round(GetSystemMetrics(SM_CYCURSOR) * sy));
+      int cx = (int)Math.Round((ci.ptScreenPos.x - curBounds.X) * sx);
+      int cy = (int)Math.Round((ci.ptScreenPos.y - curBounds.Y) * sy);
+      DrawIconEx(memDC, cx, cy, ci.hCursor, cw, ch, 0, IntPtr.Zero, 3);
+    }
+
+    GdiFlush();
+    Marshal.Copy(dibBits, dst, 0, stride * outH);
   }
 
   void DrawCursor() {
@@ -447,17 +578,28 @@ public class DeskBridgeStreamer {
       b = bounds; mw = maxWidth; q = quality; dirty = configDirty; configDirty = false;
       myGen = generation; reference = refPixels; keyReq = keyRequested; wantKey = keyRequested != keySatisfied;
     }
-    if (dirty || capBmp == null) {
-      Configure(b, mw, q);
-      stride = ReadStride();
-    }
+    if (dirty || !configured) Configure(b, mw, q);
 
     Stopwatch sw = Stopwatch.StartNew();
-    capG.CopyFromScreen(curBounds.Location, Point.Empty, curBounds.Size, CopyPixelOperation.SourceCopy);
-    DrawCursor();
-    if (outG != null) outG.DrawImage(capBmp, 0, 0, outW, outH);
     byte[] cur = TakeSpare(stride * outH);
-    CopyPixels(cur);
+    bool usedFast = fastActive;
+    if (fastActive) {
+      try {
+        CaptureFast(cur);
+      } catch (Exception e) {
+        // Switch to the GDI+ path for good and resync with a keyframe.
+        LastError = "Fast capture failed, switching to GDI+ fallback: " + e.Message;
+        AllowFastCapture = false;
+        configured = false;
+        lock (gate) { spare.Push(cur); keyRequested++; }
+        return;
+      }
+    } else {
+      capG.CopyFromScreen(curBounds.Location, Point.Empty, curBounds.Size, CopyPixelOperation.SourceCopy);
+      DrawCursor();
+      if (outG != null) outG.DrawImage(capBmp, 0, 0, outW, outH);
+      CopyPixels(cur);
+    }
     double capMs = sw.Elapsed.TotalMilliseconds;
 
     int tilesX = (outW + TileSize - 1) / TileSize;
@@ -486,6 +628,9 @@ public class DeskBridgeStreamer {
       // Past half the screen, one full JPEG is smaller than many tiles.
       if (nChanged * 2 > total) key = true;
     }
+    // The screen is changing (video, scrolling, animation): keep capturing at the fast rate,
+    // not only after user input.
+    lock (gate) { activeUntil = Math.Max(activeUntil, clock.ElapsedMilliseconds + 500); }
 
     sw.Restart();
     List<int> rects = new List<int>();
@@ -494,16 +639,39 @@ public class DeskBridgeStreamer {
       EncodeRect(0, 0, outW, outH, rects, output);
       nChanged = total;
     } else {
+      // Changed tiles -> horizontal runs per tile row -> runs with the same span on consecutive
+      // rows merged into rectangles. A video area becomes one JPEG instead of many strips.
+      List<int[]> open = new List<int[]>();   // [startTx, endTx, firstTy, lastTy]
+      List<int[]> rectsTiles = new List<int[]>();
       for (int ty = 0; ty < tilesY; ty++) {
+        List<int[]> next = new List<int[]>();
         int tx = 0;
         while (tx < tilesX) {
           if (!changed[ty * tilesX + tx]) { tx++; continue; }
           int start = tx;
           while (tx < tilesX && changed[ty * tilesX + tx]) tx++;
-          int x = start * TileSize;
-          int y = ty * TileSize;
-          EncodeRect(x, y, Math.Min(tx * TileSize, outW) - x, Math.Min(TileSize, outH - y), rects, output);
+          int[] match = null;
+          foreach (int[] o in open) {
+            if (o[0] == start && o[1] == tx && o[3] == ty - 1) { match = o; break; }
+          }
+          if (match != null) {
+            match[3] = ty;
+            open.Remove(match);
+            next.Add(match);
+          } else {
+            next.Add(new int[] { start, tx, ty, ty });
+          }
         }
+        rectsTiles.AddRange(open);
+        open = next;
+      }
+      rectsTiles.AddRange(open);
+      foreach (int[] r in rectsTiles) {
+        int x = r[0] * TileSize;
+        int y = r[2] * TileSize;
+        int rw = Math.Min(r[1] * TileSize, outW) - x;
+        int rh = Math.Min((r[3] + 1) * TileSize, outH) - y;
+        EncodeRect(x, y, rw, rh, rects, output);
       }
     }
     double encMs = sw.Elapsed.TotalMilliseconds;
@@ -512,7 +680,7 @@ public class DeskBridgeStreamer {
     f.Key = key; f.Width = outW; f.Height = outH; f.Rects = rects.ToArray();
     f.Data = output.GetBuffer(); f.DataLength = (int)output.Length;
     f.CaptureMs = capMs; f.EncodeMs = encMs; f.ChangedTiles = nChanged; f.TotalTiles = total; f.Quality = q;
-    f.Pixels = cur; f.Generation = myGen; f.KeyFor = keyReq;
+    f.Pixels = cur; f.Generation = myGen; f.KeyFor = keyReq; f.FastCapture = usedFast;
 
     lock (gate) {
       if (generation != myGen) {
@@ -1001,6 +1169,7 @@ while ($true) {
             ch = $frame.ChangedTiles
             tt = $frame.TotalTiles
             inf = $inFlight.Count
+            cm = $(if ($frame.FastCapture) { 'fast' } else { 'gdi+' })
           }
           # Only report RTT once measured; the relay's adaptive quality treats it as a real sample.
           if ($rttMs -gt 0) {

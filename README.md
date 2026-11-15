@@ -118,7 +118,8 @@ DeskBridge uses a three-part real-time architecture connected through a central 
 
 DeskBridge is built for controlling PCs over the internet, so it keeps the stream small and adapts to the link:
 
-- **Only changed screen areas are sent.** The agent compares 64×64 tiles and sends JPEGs of the changed regions; an idle desktop costs almost nothing, typing sends a few small tiles.
+- **Only changed screen areas are sent.** The agent compares 64×64 tiles and sends the changed regions merged into rectangles (a playing video becomes one JPEG); an idle desktop costs almost nothing, typing sends a few small tiles.
+- **Fast capture.** The screen is grabbed and scaled in a single Windows GDI call, and capture runs at full rate whenever the screen is changing (video, scrolling), not only while you touch the controls. If that call fails on a PC, the agent falls back to the older capture method automatically; the stats panel shows which one is active (`fast` or `gdi+`).
 - **Capture and sending run in parallel** with input handling, so the mouse stays responsive even while a frame is uploading.
 - **Adaptive quality and pacing.** The agent and relay watch the frame round trip (PC upload → relay → phone → back) and compare it with the path's normal latency. Only *extra* delay, meaning frames queuing up, lowers resolution/JPEG quality or shrinks the send window. A distant but uncongested connection keeps full quality and frame rate. The SD/HD/Ultra selector sets the maximum (as a pixel budget, so ultrawide screens get the same detail).
 - **Smooth on phones.** Frames are drawn straight onto a canvas (decoded off the main thread) and acknowledged only after they are on screen.

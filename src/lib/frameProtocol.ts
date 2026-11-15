@@ -42,6 +42,8 @@ export interface AgentFrameStats {
   brtt?: number;
   /** Agent send window, KB. */
   win?: number;
+  /** Capture method: 'fast' (one-call GDI StretchBlt) or 'gdi+' (fallback). */
+  cm?: string;
 }
 
 export interface FrameHeader {
