@@ -1,40 +1,17 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
-  Bot,
-  ChevronDown,
-  ChevronUp,
-  Eye,
-  EyeOff,
-  Keyboard,
-  Lock,
-  Maximize2,
-  Minimize2,
-  Monitor,
-  MousePointerClick,
-  QrCode,
-  Send,
-  Touchpad,
-  Wifi,
-  WifiOff,
-  X,
-  ZoomIn,
-  ZoomOut,
-} from 'lucide-react';
+import { Bot, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad, ZoomIn, ZoomOut } from 'lucide-react';
 import type { HostProfile, RemoteInputEvent } from '../types/deskbridge';
+import { useCoalescedPointerInput } from '../hooks/useCoalescedPointerInput';
+import { mapToStreamCoords } from '../lib/streamCoords';
 import { AIAssistantPanel } from './AIAssistantPanel';
-
-type StreamQualityPreset = 'sd' | 'hd' | 'ultra';
-
-const QUALITY_PRESETS: Record<StreamQualityPreset, { label: string; maxWidth: number; jpegQuality: number }> = {
-  sd: { label: 'SD', maxWidth: 854, jpegQuality: 52 },
-  hd: { label: 'HD', maxWidth: 1152, jpegQuality: 62 },
-  ultra: { label: 'Ultra', maxWidth: 1600, jpegQuality: 78 },
-};
+import { FullscreenHud, type InputMode } from './controlDeck/FullscreenHud';
+import { HostChips } from './controlDeck/HostChips';
+import { KeyboardDrawer } from './controlDeck/KeyboardDrawer';
+import { MobileAIDrawer } from './controlDeck/MobileAIDrawer';
+import { QUALITY_OPTIONS, QUALITY_PRESETS, type StreamQualityPreset } from './controlDeck/qualityPresets';
+import { StreamViewport } from './controlDeck/StreamViewport';
+import { TrackpadPanel, type PointerHandlers } from './controlDeck/TrackpadPanel';
 
 interface TouchControlDeckProps {
   hosts: HostProfile[];
@@ -55,7 +32,7 @@ export function TouchControlDeck({
   onOpenQrScanner,
   onOpenHostSetup,
 }: TouchControlDeckProps) {
-  const [inputMode, setInputMode] = useState<'trackpad' | 'direct'>('trackpad');
+  const [inputMode, setInputMode] = useState<InputMode>('trackpad');
   const [streamQuality, setStreamQuality] = useState<StreamQualityPreset>('hd');
   const [zoomed, setZoomed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -94,74 +71,7 @@ export function TouchControlDeck({
     scrollCursorMoved: boolean;
   } | null>(null);
 
-  // Coalesce high-frequency pointermove events (~120Hz on mobile/iPad) into 16ms batches (~60Hz)
-  const pendingMoveRef = useRef<{ dx: number; dy: number; hostId: string | null }>({
-    dx: 0,
-    dy: 0,
-    hostId: null,
-  });
-  const moveFlushTimerRef = useRef<number | null>(null);
-
-  // Coalesce high-frequency scroll gestures into 24ms wheel batches
-  const pendingScrollRef = useRef<{ dx: number; dy: number; hostId: string | null }>({
-    dx: 0,
-    dy: 0,
-    hostId: null,
-  });
-  const scrollFlushTimerRef = useRef<number | null>(null);
-
-  const flushPendingMove = useCallback(() => {
-    if (moveFlushTimerRef.current !== null) {
-      window.clearTimeout(moveFlushTimerRef.current);
-      moveFlushTimerRef.current = null;
-    }
-    const { dx, dy, hostId } = pendingMoveRef.current;
-    if ((dx !== 0 || dy !== 0) && hostId) {
-      pendingMoveRef.current.dx = 0;
-      pendingMoveRef.current.dy = 0;
-      onSendInput({ type: 'mousemove', x: 0, y: 0, relative: true, dx, dy }, hostId, 'touch');
-    }
-  }, [onSendInput]);
-
-  const flushPendingScroll = useCallback(() => {
-    if (scrollFlushTimerRef.current !== null) {
-      window.clearTimeout(scrollFlushTimerRef.current);
-      scrollFlushTimerRef.current = null;
-    }
-    const { dx, dy, hostId } = pendingScrollRef.current;
-    if ((Math.abs(dx) >= 0.15 || Math.abs(dy) >= 0.15) && hostId) {
-      pendingScrollRef.current.dx = 0;
-      pendingScrollRef.current.dy = 0;
-      onSendInput(
-        { type: 'scroll', deltaX: Number(dx.toFixed(2)), deltaY: Number(dy.toFixed(2)) },
-        hostId,
-        'touch',
-      );
-    }
-  }, [onSendInput]);
-
-  const queueScroll = useCallback(
-    (deltaX: number, deltaY: number, hostId: string) => {
-      pendingScrollRef.current.hostId = hostId;
-      pendingScrollRef.current.dx += deltaX;
-      pendingScrollRef.current.dy += deltaY;
-      if (scrollFlushTimerRef.current === null) {
-        scrollFlushTimerRef.current = window.setTimeout(flushPendingScroll, 24);
-      }
-    },
-    [flushPendingScroll],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (moveFlushTimerRef.current !== null) {
-        window.clearTimeout(moveFlushTimerRef.current);
-      }
-      if (scrollFlushTimerRef.current !== null) {
-        window.clearTimeout(scrollFlushTimerRef.current);
-      }
-    };
-  }, []);
+  const { queueMove, flushMove, queueScroll, flushScroll } = useCoalescedPointerInput(onSendInput);
 
   // Lock body scroll while fullscreen overlay is active (prevents iPad/iPhone Safari page bounce)
   useEffect(() => {
@@ -356,26 +266,8 @@ export function TouchControlDeck({
   const computeNormalizedCoords = (clientX: number, clientY: number, fallbackEl: HTMLElement) => {
     const img = streamImgRef.current;
     const rect = (img || fallbackEl).getBoundingClientRect();
-    let left = rect.left;
-    let top = rect.top;
-    let width = rect.width;
-    let height = rect.height;
-
-    if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
-      const imgRatio = img.naturalWidth / img.naturalHeight;
-      const boxRatio = rect.width / rect.height;
-      if (imgRatio > boxRatio) {
-        height = rect.width / imgRatio;
-        top = rect.top + (rect.height - height) / 2;
-      } else {
-        width = rect.height * imgRatio;
-        left = rect.left + (rect.width - width) / 2;
-      }
-    }
-
-    const nx = Math.max(0, Math.min(1, (clientX - left) / width));
-    const ny = Math.max(0, Math.min(1, (clientY - top) / height));
-    return { nx, ny };
+    const natural = img ? { width: img.naturalWidth, height: img.naturalHeight } : undefined;
+    return mapToStreamCoords(clientX, clientY, rect, natural);
   };
 
   const handleDirectPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -423,7 +315,7 @@ export function TouchControlDeck({
     const dp = directPointerRef.current;
     if (!dp || dp.pointerId !== e.pointerId) return;
     directPointerRef.current = null;
-    flushPendingScroll();
+    flushScroll();
 
     if (dp.isScrolling) return;
 
@@ -443,7 +335,7 @@ export function TouchControlDeck({
   const handleDirectPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
     if (directPointerRef.current?.pointerId === e.pointerId) {
       directPointerRef.current = null;
-      flushPendingScroll();
+      flushScroll();
     }
   };
 
@@ -505,20 +397,13 @@ export function TouchControlDeck({
     const dx = Math.round(rawDx * sensitivity * accel);
     const dy = Math.round(rawDy * sensitivity * accel);
 
-    if (dx !== 0 || dy !== 0) {
-      pendingMoveRef.current.hostId = activeHost.hostId;
-      pendingMoveRef.current.dx += dx;
-      pendingMoveRef.current.dy += dy;
-      if (moveFlushTimerRef.current === null) {
-        moveFlushTimerRef.current = window.setTimeout(flushPendingMove, 16);
-      }
-    }
+    queueMove(dx, dy, activeHost.hostId);
   };
 
   const handleTrackpadPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     pointersMapRef.current.delete(e.pointerId);
-    flushPendingMove();
-    flushPendingScroll();
+    flushMove();
+    flushScroll();
 
     if (pointersMapRef.current.size === 1) {
       const remaining = Array.from(pointersMapRef.current.values())[0];
@@ -630,305 +515,86 @@ export function TouchControlDeck({
     }
   };
 
+  const trackpadHandlers: PointerHandlers = {
+    onPointerDown: handleTrackpadPointerDown,
+    onPointerMove: handleTrackpadPointerMove,
+    onPointerUp: handleTrackpadPointerUp,
+    onPointerCancel: handleTrackpadPointerUp,
+  };
+  const directHandlers: PointerHandlers = {
+    onPointerDown: handleDirectPointerDown,
+    onPointerMove: handleDirectPointerMove,
+    onPointerUp: handleDirectPointerUp,
+    onPointerCancel: handleDirectPointerCancel,
+  };
+
+  const sendClick = (button: 'left' | 'right') => onSendInput({ type: 'click', button }, activeHost.hostId, 'touch');
+  const sendScroll = (deltaY: number) => onSendInput({ type: 'scroll', deltaX: 0, deltaY }, activeHost.hostId, 'touch');
+  const sendKey = (key: string) => onSendInput({ type: 'key', key }, activeHost.hostId, 'keyboard');
+  const sendText = (text: string) => onSendInput({ type: 'type', text }, activeHost.hostId, 'keyboard');
+  const dispatchAiInput = (input: RemoteInputEvent, hostId?: string) =>
+    onSendInput(input, hostId || activeHost.hostId, 'ai');
+
+  const closeKeyboard = () => {
+    showKeyboardRef.current = false;
+    keyboardFocusLockRef.current = false;
+    setShowKeyboard(false);
+    keyboardInputRef.current?.blur();
+  };
+
   const renderDesktopStreamViewport = (fullscreen: boolean) => {
     const useGestureTrackpad = fullscreen && inputMode === 'trackpad' && !showFullscreenTrackpad;
     return (
-      <div
+      <StreamViewport
+        host={activeHost}
+        frame={activeFrame}
+        fullscreen={fullscreen}
+        zoomed={zoomed}
+        crosshair={!useGestureTrackpad}
+        pointerHandlers={useGestureTrackpad ? trackpadHandlers : directHandlers}
         onWheel={handleViewportWheel}
-        className={`relative bg-black select-none ${
-          zoomed ? 'overflow-auto' : 'overflow-hidden'
-        } ${fullscreen ? 'w-full h-full flex items-center justify-center' : 'bg-slate-950'} ${
-          !zoomed ? 'touch-none' : ''
-        } ${useGestureTrackpad ? '' : 'cursor-crosshair'}`}
-      >
-        <div
-          onPointerDown={useGestureTrackpad ? handleTrackpadPointerDown : handleDirectPointerDown}
-          onPointerMove={useGestureTrackpad ? handleTrackpadPointerMove : handleDirectPointerMove}
-          onPointerUp={useGestureTrackpad ? handleTrackpadPointerUp : handleDirectPointerUp}
-          onPointerCancel={useGestureTrackpad ? handleTrackpadPointerUp : handleDirectPointerCancel}
-          onContextMenu={(e) => e.preventDefault()}
-          className={`relative flex items-center justify-center transition-transform duration-200 ${
-            fullscreen ? 'w-full h-full' : 'aspect-video w-full'
-          } ${zoomed ? 'scale-150 origin-center' : 'scale-100'}`}
-        >
-          {activeFrame ? (
-            <img
-              ref={streamImgRef}
-              src={activeFrame}
-              alt={`Live desktop stream of ${activeHost.name}`}
-              referrerPolicy="no-referrer"
-              draggable={false}
-              className="w-full h-full max-w-full max-h-full object-contain pointer-events-none select-none"
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center gap-2 p-8 text-center text-slate-400">
-              <Monitor className="w-10 h-10 text-slate-600" />
-              <p className="text-sm font-medium text-slate-300">
-                {activeHost.status === 'online'
-                  ? 'Waiting for next video frame from Windows host...'
-                  : `${activeHost.name} is offline`}
-              </p>
-              <p className="text-xs text-slate-500 max-w-sm">
-                {activeHost.status === 'online'
-                  ? 'Touchpad, keyboard, and AI commands are active.'
-                  : 'Start the DeskBridge Host agent on that computer to resume streaming.'}
-              </p>
-            </div>
-          )}
-
-          {tapFeedback && (
-            <div
-              key={tapFeedback.id}
-              style={{ left: `${tapFeedback.x}%`, top: `${tapFeedback.y}%` }}
-              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full border-2 border-blue-400 bg-blue-500/20"
-            />
-          )}
-        </div>
-      </div>
+        imgRef={streamImgRef}
+        tapFeedback={tapFeedback}
+      />
     );
   };
 
   const renderKeyboardDrawer = (compact = false) => (
-    <div
-      className={`rounded-2xl border border-slate-200 dark:border-slate-800 ${
-        compact ? 'bg-slate-900/95 backdrop-blur-md p-3 shadow-2xl border-slate-700/80' : 'bg-white dark:bg-slate-900 p-4'
-      } space-y-2.5`}
-    >
-      <form onSubmit={handleSendTextSubmit} className="flex items-center gap-2">
-        <input
-          ref={compact ? keyboardInputRef : undefined}
-          type="text"
-          value={textBuffer}
-          onChange={(e) => handleTextChange(e.target.value)}
-          onKeyDown={handleKeyboardInputKeyDown}
-          onFocus={() => {
-            keyboardFocusLockRef.current = true;
-          }}
-          onBlur={() => {
-            window.setTimeout(() => {
-              if (!showKeyboardRef.current) {
-                keyboardFocusLockRef.current = false;
-              }
-            }, 350);
-          }}
-          autoCapitalize="none"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-          enterKeyHint="send"
-          tabIndex={compact && !showKeyboard ? -1 : 0}
-          placeholder={liveTyping ? 'Type live keystrokes to Windows...' : 'Type text to send to Windows...'}
-          className={`flex-1 min-h-[44px] px-3.5 py-2 rounded-xl border text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 ${
-            compact
-              ? 'bg-slate-950 border-slate-700 text-white'
-              : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white'
-          }`}
-        />
-        <button
-          type="submit"
-          className="min-h-[44px] px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0"
-        >
-          <Send className="w-3.5 h-3.5" />
-          <span>{liveTyping ? 'Enter' : 'Send'}</span>
-        </button>
-        {compact && (
-          <button
-            type="button"
-            onClick={() => {
-              showKeyboardRef.current = false;
-              keyboardFocusLockRef.current = false;
-              setShowKeyboard(false);
-              keyboardInputRef.current?.blur();
-            }}
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl bg-slate-800 text-slate-300 hover:text-white shrink-0"
-            aria-label="Close keyboard"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        )}
-      </form>
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete'] as const).map((keyName) => (
-            <button
-              key={keyName}
-              type="button"
-              onClick={() => onSendInput({ type: 'key', key: keyName }, activeHost.hostId, 'keyboard')}
-              className={`min-h-[38px] px-2.5 py-1 rounded-lg border text-xs font-mono hover:border-blue-500 ${
-                compact
-                  ? 'border-slate-700 bg-slate-950 text-slate-200'
-                  : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
-              }`}
-            >
-              {keyName === 'Escape' ? 'Esc' : keyName}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => onSendInput({ type: 'type', text: ' ' }, activeHost.hostId, 'keyboard')}
-            className={`min-h-[38px] px-2.5 py-1 rounded-lg border text-xs font-mono hover:border-blue-500 ${
-              compact
-                ? 'border-slate-700 bg-slate-950 text-slate-200'
-                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
-            }`}
-          >
-            Space
-          </button>
-          <button
-            type="button"
-            onClick={() => onSendInput({ type: 'key', key: 'ArrowLeft' }, activeHost.hostId, 'keyboard')}
-            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
-              compact
-                ? 'border-slate-700 bg-slate-950 text-slate-200'
-                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
-            }`}
-            aria-label="Left arrow"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onSendInput({ type: 'key', key: 'ArrowUp' }, activeHost.hostId, 'keyboard')}
-            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
-              compact
-                ? 'border-slate-700 bg-slate-950 text-slate-200'
-                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
-            }`}
-            aria-label="Up arrow"
-          >
-            <ArrowUp className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onSendInput({ type: 'key', key: 'ArrowDown' }, activeHost.hostId, 'keyboard')}
-            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
-              compact
-                ? 'border-slate-700 bg-slate-950 text-slate-200'
-                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
-            }`}
-            aria-label="Down arrow"
-          >
-            <ArrowDown className="w-4 h-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onSendInput({ type: 'key', key: 'ArrowRight' }, activeHost.hostId, 'keyboard')}
-            className={`min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border ${
-              compact
-                ? 'border-slate-700 bg-slate-950 text-slate-200'
-                : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200'
-            }`}
-            aria-label="Right arrow"
-          >
-            <ArrowRight className="w-4 h-4" />
-          </button>
-        </div>
-
-        <label className="inline-flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={liveTyping}
-            onChange={(e) => setLiveTyping(e.target.checked)}
-            className="rounded border-slate-300 dark:border-slate-700 text-blue-600"
-          />
-          <span>Live keystrokes</span>
-        </label>
-      </div>
-    </div>
+    <KeyboardDrawer
+      compact={compact}
+      visible={showKeyboard}
+      value={textBuffer}
+      liveTyping={liveTyping}
+      inputRef={compact ? keyboardInputRef : undefined}
+      onChange={handleTextChange}
+      onSubmit={handleSendTextSubmit}
+      onKeyDown={handleKeyboardInputKeyDown}
+      onFocus={() => {
+        keyboardFocusLockRef.current = true;
+      }}
+      onBlur={() => {
+        window.setTimeout(() => {
+          if (!showKeyboardRef.current) {
+            keyboardFocusLockRef.current = false;
+          }
+        }, 350);
+      }}
+      onClose={compact ? closeKeyboard : undefined}
+      onLiveTypingChange={setLiveTyping}
+      onSendKey={sendKey}
+      onSendText={sendText}
+    />
   );
 
-  const renderTrackpadPanel = (fullscreenOverlay = false) => (
-    <div
-      className={
-        fullscreenOverlay
-          ? 'bg-slate-950/90 backdrop-blur-md border-t border-slate-800 p-2.5 space-y-2 pb-safe'
-          : 'rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2.5'
-      }
-    >
-      <div className="flex items-center justify-between px-1 text-xs text-slate-400">
-        <span>Drag = move · 2-finger drag = scroll · Tap = click</span>
-        <label className="inline-flex items-center gap-2 shrink-0 ml-2">
-          <span>Speed</span>
-          <input
-            type="range"
-            min={1.0}
-            max={6.0}
-            step={0.2}
-            value={sensitivity}
-            onChange={(e) => setSensitivity(Number(e.target.value))}
-            className="w-20 accent-blue-600"
-          />
-        </label>
-      </div>
-
-      <div className="grid grid-cols-12 gap-2">
-        <div
-          onPointerDown={handleTrackpadPointerDown}
-          onPointerMove={handleTrackpadPointerMove}
-          onPointerUp={handleTrackpadPointerUp}
-          onPointerCancel={handleTrackpadPointerUp}
-          className={`col-span-10 ${
-            fullscreenOverlay ? 'h-32 sm:h-36 bg-slate-900 border-slate-800' : 'h-44 sm:h-48 bg-slate-100 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
-          } rounded-xl border touch-none select-none flex flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 active:border-blue-500 transition-colors`}
-        >
-          <Touchpad className="w-5 h-5" />
-          <span className="text-xs font-medium">Touchpad Surface</span>
-        </div>
-
-        <div className="col-span-2 flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -5 }, activeHost.hostId, 'touch')}
-            className={`flex-1 min-h-[40px] rounded-xl border flex items-center justify-center active:scale-[0.98] ${
-              fullscreenOverlay
-                ? 'bg-slate-900 border-slate-800 text-slate-200'
-                : 'bg-slate-100 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'
-            }`}
-            aria-label="Scroll up"
-          >
-            <ChevronUp className="w-5 h-5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 5 }, activeHost.hostId, 'touch')}
-            className={`flex-1 min-h-[40px] rounded-xl border flex items-center justify-center active:scale-[0.98] ${
-              fullscreenOverlay
-                ? 'bg-slate-900 border-slate-800 text-slate-200'
-                : 'bg-slate-100 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300'
-            }`}
-            aria-label="Scroll down"
-          >
-            <ChevronDown className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          onClick={() => onSendInput({ type: 'click', button: 'left' }, activeHost.hostId, 'touch')}
-          className={`min-h-[44px] rounded-xl text-sm font-medium active:scale-[0.98] transition-transform ${
-            fullscreenOverlay
-              ? 'bg-slate-800 hover:bg-slate-700 text-white'
-              : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-white'
-          }`}
-        >
-          Left Click
-        </button>
-        <button
-          type="button"
-          onClick={() => onSendInput({ type: 'click', button: 'right' }, activeHost.hostId, 'touch')}
-          className={`min-h-[44px] rounded-xl text-sm font-medium active:scale-[0.98] transition-transform ${
-            fullscreenOverlay
-              ? 'bg-slate-800 hover:bg-slate-700 text-white'
-              : 'bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-white'
-          }`}
-        >
-          Right Click
-        </button>
-      </div>
-    </div>
+  const renderTrackpadPanel = (overlay = false) => (
+    <TrackpadPanel
+      overlay={overlay}
+      sensitivity={sensitivity}
+      onSensitivityChange={setSensitivity}
+      surfaceHandlers={trackpadHandlers}
+      onScroll={sendScroll}
+      onClick={sendClick}
+    />
   );
 
   const fullscreenOverlay = isFullscreen
@@ -952,182 +618,29 @@ export function TouchControlDeck({
             </div>
           </div>
 
-          {/* Bottom-positioned floating HUD keeps the entire top Windows titlebar / Edge tabs 100% clear */}
-          {!hudHidden ? (
-            <div className="absolute bottom-2 left-2 right-2 z-10 pointer-events-none flex flex-col items-center gap-2 pb-safe">
-              {inputMode === 'trackpad' && showFullscreenTrackpad && (
-                <div className="pointer-events-auto w-full max-w-md rounded-2xl overflow-hidden border border-slate-700/70 shadow-2xl">
-                  {renderTrackpadPanel(true)}
-                </div>
-              )}
-
-              <div className="pointer-events-auto max-w-full px-2.5 py-1.5 rounded-2xl bg-slate-950/80 backdrop-blur-md border border-slate-700/70 flex items-center gap-1.5 overflow-x-auto shadow-lg">
-                <span className="text-xs font-semibold text-white truncate max-w-[96px] sm:max-w-[160px] pl-1">
-                  {activeHost.name}
-                </span>
-
-                {hosts.length > 1 && (
-                  <select
-                    value={activeHost.hostId}
-                    onChange={(e) => onSelectHost(e.target.value)}
-                    aria-label="Switch computer"
-                    className="min-h-[34px] px-2 py-0.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200"
-                  >
-                    {hosts.map((h) => (
-                      <option key={h.hostId} value={h.hostId}>
-                        {h.groupLabel} · {h.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setInputMode(inputMode === 'trackpad' ? 'direct' : 'trackpad')}
-                  className="min-h-[36px] inline-flex items-center gap-1 px-2.5 rounded-xl bg-slate-800/90 text-xs font-medium text-white shrink-0"
-                >
-                  {inputMode === 'trackpad' ? (
-                    <>
-                      <Touchpad className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Drag Mouse</span>
-                    </>
-                  ) : (
-                    <>
-                      <MousePointerClick className="w-3.5 h-3.5 text-blue-400" />
-                      <span>Tap Screen</span>
-                    </>
-                  )}
-                </button>
-
-                {inputMode === 'trackpad' && !showFullscreenTrackpad && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => onSendInput({ type: 'click', button: 'left' }, activeHost.hostId, 'touch')}
-                      className="min-h-[36px] px-2 rounded-xl bg-slate-800/90 text-xs font-medium text-white shrink-0"
-                    >
-                      L
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onSendInput({ type: 'click', button: 'right' }, activeHost.hostId, 'touch')}
-                      className="min-h-[36px] px-2 rounded-xl bg-slate-800/90 text-xs font-medium text-white shrink-0"
-                    >
-                      R
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -5 }, activeHost.hostId, 'touch')}
-                      className="min-h-[36px] min-w-[34px] rounded-xl bg-slate-800/90 text-slate-200 flex items-center justify-center shrink-0"
-                      aria-label="Scroll up"
-                    >
-                      <ChevronUp className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 5 }, activeHost.hostId, 'touch')}
-                      className="min-h-[36px] min-w-[34px] rounded-xl bg-slate-800/90 text-slate-200 flex items-center justify-center shrink-0"
-                      aria-label="Scroll down"
-                    >
-                      <ChevronDown className="w-4 h-4" />
-                    </button>
-                  </>
-                )}
-
-                {inputMode === 'trackpad' && (
-                  <button
-                    type="button"
-                    onClick={() => setShowFullscreenTrackpad((v) => !v)}
-                    className={`min-h-[36px] px-2.5 rounded-xl text-xs font-medium shrink-0 ${
-                      showFullscreenTrackpad ? 'bg-blue-600 text-white' : 'bg-slate-800/90 text-slate-300'
-                    }`}
-                  >
-                    {showFullscreenTrackpad ? 'Hide Pad' : 'Pad'}
-                  </button>
-                )}
-
-                <select
-                  value={streamQuality}
-                  onChange={(e) => handleQualityChange(e.target.value as StreamQualityPreset)}
-                  aria-label="Stream quality"
-                  className="min-h-[36px] px-2 rounded-xl bg-slate-800/90 border border-slate-700 text-xs font-medium text-slate-200 shrink-0"
-                >
-                  <option value="sd">SD</option>
-                  <option value="hd">HD</option>
-                  <option value="ultra">Ultra</option>
-                </select>
-
-                <button
-                  type="button"
-                  onClick={() => setZoomed((z) => !z)}
-                  className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl shrink-0 ${
-                    zoomed ? 'bg-blue-600 text-white' : 'bg-slate-800/90 text-slate-200'
-                  }`}
-                  aria-label={zoomed ? 'Reset zoom' : 'Zoom screen'}
-                >
-                  {zoomed ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={toggleKeyboardDrawer}
-                  className={`min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl shrink-0 ${
-                    showKeyboard ? 'bg-blue-600 text-white' : 'bg-slate-800/90 text-slate-200'
-                  }`}
-                  aria-label="Toggle keyboard"
-                >
-                  <Keyboard className="w-4 h-4" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowMobileAI(true)}
-                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl bg-slate-800/90 text-blue-400 shrink-0"
-                  aria-label="Open AI Voice Assistant"
-                >
-                  <Bot className="w-4 h-4" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setHudHidden(true)}
-                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl bg-slate-800/90 text-slate-300 shrink-0"
-                  aria-label="Hide controls"
-                >
-                  <EyeOff className="w-4 h-4" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={exitFullscreen}
-                  className="min-h-[36px] inline-flex items-center gap-1 px-2.5 rounded-xl bg-red-600/90 hover:bg-red-600 text-xs font-semibold text-white shrink-0"
-                  aria-label="Exit full screen"
-                >
-                  <Minimize2 className="w-3.5 h-3.5" />
-                  <span>Exit</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="fixed bottom-3 left-3 z-[10000] flex items-center gap-1.5 pb-safe">
-              <button
-                type="button"
-                onClick={() => setHudHidden(false)}
-                className="min-h-[40px] px-3 rounded-full bg-slate-950/75 border border-slate-700 text-xs font-medium text-white backdrop-blur-md inline-flex items-center gap-1.5"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                <span>Controls</span>
-              </button>
-              <button
-                type="button"
-                onClick={exitFullscreen}
-                className="min-h-[40px] min-w-[40px] rounded-full bg-slate-950/75 border border-slate-700 text-white backdrop-blur-md flex items-center justify-center"
-                aria-label="Exit full screen"
-              >
-                <Minimize2 className="w-4 h-4" />
-              </button>
-            </div>
-          )}
+          <FullscreenHud
+            host={activeHost}
+            hosts={hosts}
+            hidden={hudHidden}
+            inputMode={inputMode}
+            showTrackpad={showFullscreenTrackpad}
+            streamQuality={streamQuality}
+            zoomed={zoomed}
+            keyboardOpen={showKeyboard}
+            trackpadPanel={renderTrackpadPanel(true)}
+            onSelectHost={onSelectHost}
+            onToggleInputMode={() => setInputMode(inputMode === 'trackpad' ? 'direct' : 'trackpad')}
+            onToggleTrackpad={() => setShowFullscreenTrackpad((v) => !v)}
+            onClick={sendClick}
+            onScroll={sendScroll}
+            onQualityChange={handleQualityChange}
+            onToggleZoom={() => setZoomed((z) => !z)}
+            onToggleKeyboard={toggleKeyboardDrawer}
+            onOpenAI={() => setShowMobileAI(true)}
+            onHide={() => setHudHidden(true)}
+            onShow={() => setHudHidden(false)}
+            onExit={exitFullscreen}
+          />
         </div>,
         document.body,
       )
@@ -1135,30 +648,7 @@ export function TouchControlDeck({
 
   return (
     <div className="space-y-4">
-      {hosts.length > 0 && (
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
-          {hosts.map((host) => {
-            const selected = host.hostId === activeHost.hostId;
-            return (
-              <button
-                key={host.hostId}
-                type="button"
-                onClick={() => onSelectHost(host.hostId)}
-                className={`min-h-[40px] inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  selected
-                    ? 'bg-blue-600 border-blue-600 text-white'
-                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-slate-300 dark:hover:border-slate-700'
-                }`}
-              >
-                {host.status === 'online' ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-                <span>{host.groupLabel}</span>
-                <span aria-hidden="true">·</span>
-                <span className="max-w-[140px] truncate">{host.name}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      <HostChips hosts={hosts} activeHostId={activeHost.hostId} onSelectHost={onSelectHost} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
         <div className="lg:col-span-7 xl:col-span-8 space-y-3">
@@ -1210,9 +700,11 @@ export function TouchControlDeck({
                   aria-label="Stream quality"
                   className="min-h-[36px] px-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200"
                 >
-                  <option value="sd">SD</option>
-                  <option value="hd">HD</option>
-                  <option value="ultra">Ultra</option>
+                  {QUALITY_OPTIONS.map(([value, preset]) => (
+                    <option key={value} value={value}>
+                      {preset.label}
+                    </option>
+                  ))}
                 </select>
 
                 <button
@@ -1308,7 +800,7 @@ export function TouchControlDeck({
             activeHost={activeHost}
             hosts={hosts}
             activeFrame={activeFrame}
-            onDispatchInput={(input, hostId) => onSendInput(input, hostId || activeHost.hostId, 'ai')}
+            onDispatchInput={dispatchAiInput}
             onSwitchHost={onSelectHost}
           />
         </div>
@@ -1316,41 +808,16 @@ export function TouchControlDeck({
 
       {fullscreenOverlay}
 
-      {showMobileAI &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-[10001] lg:hidden flex items-end bg-black/60 backdrop-blur-sm"
-            role="dialog"
-            aria-modal="true"
-          >
-            <div className="w-full rounded-t-3xl bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-800">
-                <span className="text-sm font-semibold text-slate-900 dark:text-white">
-                  AI Voice & Command Drawer
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowMobileAI(false)}
-                  className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-500"
-                  aria-label="Close AI drawer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="p-3">
-                <AIAssistantPanel
-                  compact
-                  activeHost={activeHost}
-                  hosts={hosts}
-                  activeFrame={activeFrame}
-                  onDispatchInput={(input, hostId) => onSendInput(input, hostId || activeHost.hostId, 'ai')}
-                  onSwitchHost={onSelectHost}
-                />
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )}
+      {showMobileAI && (
+        <MobileAIDrawer
+          host={activeHost}
+          hosts={hosts}
+          frame={activeFrame}
+          onDispatchInput={dispatchAiInput}
+          onSwitchHost={onSelectHost}
+          onClose={() => setShowMobileAI(false)}
+        />
+      )}
     </div>
   );
 }

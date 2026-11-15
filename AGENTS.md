@@ -22,9 +22,12 @@ DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse,
 | `src/App.tsx` | Tab shell: Fleet, Control Deck, AI Assistant, Windows Host. |
 | `src/hooks/useDeskBridgeSocket.ts` | Controller WebSocket client: fleet state, pairing, frame decoding, input sending. |
 | `src/lib/auth.ts` | `apiFetch` (use it for all `/api` calls), login/logout, unauthorized event. |
-| `src/components/` | UI. `TouchControlDeck.tsx` (trackpad/tap/keyboard), `WindowsHostView.tsx` (agent downloads + browser host mode), `AIAssistantPanel.tsx`, `FleetView.tsx`, `QrScannerModal.tsx`, `LoginScreen.tsx`, `AuthGate.tsx`. |
+| `src/components/` | UI. `TouchControlDeck.tsx` (gesture handling + layout) composes `controlDeck/*` (`StreamViewport`, `TrackpadPanel`, `KeyboardDrawer`, `FullscreenHud`, `HostChips`, `MobileAIDrawer`, `qualityPresets`). `WindowsHostView.tsx` (browser host mode) composes `hostView/*` (`PairingPanel`, `AgentDownloadCard`). Also `AIAssistantPanel.tsx`, `FleetView.tsx`, `QrScannerModal.tsx`, `LoginScreen.tsx`, `AuthGate.tsx`. |
+| `src/hooks/useCoalescedPointerInput.ts` | Batches relative mouse moves (16ms) and scroll deltas (24ms) before sending. |
+| `src/lib/streamCoords.ts` | Pointer → normalized remote coordinates, accounting for `object-contain` letterboxing. |
+| `src/lib/virtualDesktop.ts` | Pure model + canvas drawing for the simulated desktop in browser host mode. |
 | `src/types/deskbridge.ts` | Shared types between server and client (`HostProfile`, `RemoteInputEvent`, AI types). |
-| `tests/` | `node:test` suites run through `tsx`: `relay.test.ts` (REST + WebSocket protocol, heartbeat, AI limits), `auth.test.ts`, `agentGenerator.test.ts`. `helpers.ts` starts an in-process relay on a free port with a temp data dir. |
+| `tests/` | `node:test` suites run through `tsx`: `relay.test.ts` (REST + WebSocket protocol, heartbeat, AI limits), `auth.test.ts`, `agentGenerator.test.ts`, `streamCoords.test.ts`, `virtualDesktop.test.ts`. `helpers.ts` starts an in-process relay on a free port with a temp data dir. |
 | `.github/workflows/ci.yml` | CI: `bun install --frozen-lockfile`, lint, test, build. |
 
 Runtime state (git-ignored, contains secrets, never commit): `.deskbridge-auth.json`, `.deskbridge-hosts.json`, `.env`.
@@ -76,7 +79,7 @@ All WebSocket traffic goes over `/ws`. JSON messages are `{ event, payload }`.
 
 Flow control: hosts keep at most about 2 unacknowledged frames in flight, and the relay drops frames for controllers whose `bufferedAmount` is high. Preserve both mechanisms when touching streaming code.
 
-If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`, the PowerShell `Handle-RemoteInput` switch, the browser host's `applyInputToVirtualDesktop`, and (if relevant) the Gemini tool declarations.
+If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`, the PowerShell `Handle-RemoteInput` switch, `applyVirtualInput` in `src/lib/virtualDesktop.ts` (browser host), and (if relevant) the Gemini tool declarations.
 
 ## Security invariants (do not break)
 
@@ -94,6 +97,7 @@ If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`
 - TypeScript (tsconfig has no `strict` flag; write code as if it did), ES modules. Server imports of local TS files use the `.js` extension (`./server/auth.js`).
 - React 19 function components with hooks, Tailwind v4 utility classes, `lucide-react` icons, and dark mode via the `dark` class on `<html>`.
 - Mobile-first UI: touch targets ≥ 40–44px, and test at phone width (~390px).
+- Keep components presentational where possible. Put logic that can run without the DOM in `src/lib/` and unit-test it.
 - Keep the PowerShell agent dependency-free (PowerShell 5.1 + .NET Framework only). Remember it is generated from a JS template literal: escape `` ` ``, `${` and backslashes accordingly.
 - Gemini model ids live in `server/aiAssistant.ts` with env overrides `GEMINI_MODEL` and `GEMINI_TRANSCRIBE_MODEL`. The Gemini key is only read server-side.
 - Don't commit build output (`dist/`), runtime state files, or a second lockfile.
