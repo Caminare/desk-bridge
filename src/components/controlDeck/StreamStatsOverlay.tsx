@@ -34,7 +34,7 @@ export function StreamStatsOverlay({ store, hostId }: StreamStatsOverlayProps) {
       ['Queue', a.rtt !== undefined && a.brtt !== undefined ? fmt(Math.max(0, a.rtt - a.brtt), ' ms') : '–'],
       ['Window', fmt(a.win, ' KB')],
       ['Up', fmt(a.kbps !== undefined ? a.kbps / 1000 : undefined, ' Mbps', 2)],
-      ['Capture', fmt(a.cap, ' ms', 1)],
+      ['Capture', `${fmt(a.cap, ' ms', 1)}${a.cm ? ` (${a.cm})` : ''}`],
       ['Encode', fmt(a.enc, ' ms', 1)],
       ['Quality', a.q !== undefined ? `${a.q} @ ${a.mw}px` : '–'],
       ['Changed', a.tt ? `${a.ch}/${a.tt} tiles` : '–'],

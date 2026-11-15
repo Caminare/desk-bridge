@@ -94,6 +94,11 @@ test('PowerShell agent: capture pipeline runs on a thread and sends tiled frames
     '$windowOpen = ($inFlight.Count -eq 0) -or ($inFlight.Count -lt $MaxInFlight -and $inFlightBytes -lt $byteBudget)',
     '$stats.brtt = [Math]::Round($baseRttMs)',
     'double pixelBudget = mw * (mw * 9.0 / 16.0);',
+    'StretchBlt(memDC, 0, 0, outW, outH, screen, curBounds.X, curBounds.Y, curBounds.Width, curBounds.Height, SRCCOPY)',
+    'dibBitmap = new Bitmap(w, h, stride, PixelFormat.Format24bppRgb, dibBits);',
+    'AllowFastCapture = false;',
+    'activeUntil = Math.Max(activeUntil, clock.ElapsedMilliseconds + 500);',
+    "cm = $(if ($frame.FastCapture) { 'fast' } else { 'gdi+' })",
   ]) {
     assert.ok(ps1.includes(needle), `missing: ${needle}`);
   }
