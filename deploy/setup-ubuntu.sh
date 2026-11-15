@@ -63,7 +63,25 @@ else
   echo "OK: $DOMAIN -> $DOMAIN_IP"
 fi
 
+# Fresh Ubuntu servers run unattended-upgrades on first boot, which holds the dpkg lock for
+# several minutes. Make every apt call in this run (including the ones inside the NodeSource
+# installer) wait for the lock instead of failing, and wait up front so progress is visible.
+APT_LOCK_CONF=/etc/apt/apt.conf.d/99deskbridge-setup-lock-timeout
+echo 'DPkg::Lock::Timeout "900";' > "$APT_LOCK_CONF"
+trap 'rm -f "$APT_LOCK_CONF"' EXIT
+
+wait_for_apt() {
+  local waited=0
+  while pgrep -x unattended-upgr >/dev/null || pgrep -x apt-get >/dev/null || pgrep -x apt >/dev/null || pgrep -x dpkg >/dev/null; do
+    if [[ $waited -eq 0 ]]; then echo "Waiting for automatic system updates to finish (normal on a new server)..."; fi
+    sleep 5
+    waited=$((waited + 5))
+    if [[ $((waited % 60)) -eq 0 ]]; then echo "  still waiting (${waited}s)..."; fi
+  done
+}
+
 step "Installing system packages"
+wait_for_apt
 apt-get update -y
 apt-get install -y ca-certificates curl git gnupg ufw
 if ! apt-get install -y caddy; then
@@ -76,6 +94,7 @@ fi
 
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]]; then
   step "Installing Node.js 22"
+  wait_for_apt
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
 fi
