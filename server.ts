@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,12 +14,31 @@ import {
   generatePowerShellHostScript,
 } from './server/windowsAgentGenerator.js';
 import { processAssistantCommand, transcribeAudioCommand } from './server/aiAssistant.js';
+import {
+  LoginRateLimiter,
+  buildClearedSessionCookie,
+  buildSessionCookie,
+  createSessionToken,
+  generateHostSecret,
+  hashSecret,
+  isRequestAuthenticated,
+  isSameOrigin,
+  loadAuthConfig,
+  safeEqual,
+  verifySecret,
+} from './server/auth.js';
 import type { AIThinkingMode, HostProfile, RemoteInputEvent } from './src/types/deskbridge.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 const HOSTS_STORE_PATH = path.join(__dirname, '.deskbridge-hosts.json');
+const AUTH_STORE_PATH = path.join(__dirname, '.deskbridge-auth.json');
+const WS_MAX_PAYLOAD = 8 * 1024 * 1024;
+const HOST_ID_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+
+const auth = loadAuthConfig(AUTH_STORE_PATH);
+const loginLimiter = new LoginRateLimiter();
 
 interface HostConnection {
   profile: HostProfile;
@@ -26,7 +46,11 @@ interface HostConnection {
   controllers: Set<WebSocket>;
   latestFrame?: string;
   latestJpeg?: Buffer;
+  /** SHA-256 of the per-host secret issued to native agents. Never sent to clients. */
+  secretHash?: string;
 }
+
+type StoredHost = HostProfile & { secretHash?: string };
 
 function getLatestFrameDataUrl(entry?: HostConnection): string | undefined {
   if (!entry) return undefined;
@@ -46,8 +70,8 @@ function loadSavedHosts() {
   try {
     if (!fs.existsSync(HOSTS_STORE_PATH)) return;
     const raw = fs.readFileSync(HOSTS_STORE_PATH, 'utf8');
-    const parsed = JSON.parse(raw) as HostProfile[];
-    for (const profile of parsed) {
+    const parsed = JSON.parse(raw) as StoredHost[];
+    for (const { secretHash, ...profile } of parsed) {
       hosts.set(profile.hostId, {
         profile: {
           ...profile,
@@ -56,6 +80,7 @@ function loadSavedHosts() {
         },
         ws: null,
         controllers: new Set(),
+        secretHash,
       });
     }
   } catch (err) {
@@ -65,11 +90,12 @@ function loadSavedHosts() {
 
 function persistHosts() {
   try {
-    const list = Array.from(hosts.values()).map((h) => ({
+    const list: StoredHost[] = Array.from(hosts.values()).map((h) => ({
       ...h.profile,
       connectedControllers: h.controllers.size,
+      secretHash: h.secretHash,
     }));
-    fs.writeFileSync(HOSTS_STORE_PATH, JSON.stringify(list, null, 2), 'utf8');
+    fs.writeFileSync(HOSTS_STORE_PATH, JSON.stringify(list, null, 2), { encoding: 'utf8', mode: 0o600 });
   } catch (err) {
     console.warn('Could not persist hosts:', err);
   }
@@ -79,7 +105,7 @@ function generatePairingCode(): string {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
   let code = '';
   for (let i = 0; i < 6; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
+    code += chars[crypto.randomInt(chars.length)];
   }
   return code;
 }
@@ -125,14 +151,53 @@ loadSavedHosts();
 
 async function startServer() {
   const app = express();
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '15mb' }));
 
-  app.get('/api/health', (_req, res) => {
+  app.get('/api/health', (req, res) => {
+    if (!isRequestAuthenticated(auth, req)) {
+      res.json({ ok: true });
+      return;
+    }
     res.json({
       ok: true,
       geminiReady: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'),
       onlineHosts: Array.from(hosts.values()).filter((h) => h.profile.status === 'online').length,
     });
+  });
+
+  app.get('/api/auth/session', (req, res) => {
+    res.json({ authenticated: isRequestAuthenticated(auth, req) });
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    const limiterKey = req.socket.remoteAddress || 'unknown';
+    if (loginLimiter.isBlocked(limiterKey)) {
+      res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' });
+      return;
+    }
+    if (!safeEqual(req.body?.token, auth.accessToken)) {
+      loginLimiter.recordFailure(limiterKey);
+      res.status(401).json({ error: 'Invalid access token.' });
+      return;
+    }
+    loginLimiter.reset(limiterKey);
+    res.setHeader('Set-Cookie', buildSessionCookie(req, createSessionToken(auth)));
+    res.json({ authenticated: true });
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    res.setHeader('Set-Cookie', buildClearedSessionCookie());
+    res.json({ authenticated: false });
+  });
+
+  // Every other API route requires an owner session.
+  app.use('/api', (req, res, next) => {
+    if (!isRequestAuthenticated(auth, req)) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    next();
   });
 
   app.get('/api/hosts', (_req, res) => {
@@ -237,6 +302,8 @@ async function startServer() {
     const hostName = String(req.query.name || 'Windows-PC');
     const groupLabel = String(req.query.group || req.query.job || 'Workstation');
     const { appUrl, wsUrl } = getBaseUrls(req);
+    // Agent scripts embed the enrollment key: never let proxies or browsers cache them.
+    res.setHeader('Cache-Control', 'no-store');
 
     if (format === 'bat') {
       const content = generateBatchLauncher();
@@ -247,14 +314,14 @@ async function startServer() {
     }
 
     if (format === 'mjs') {
-      const content = generateNodeHostScript({ wsUrl, appUrl, hostName, groupLabel });
+      const content = generateNodeHostScript({ wsUrl, appUrl, hostName, groupLabel, enrollKey: auth.enrollKey });
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
       res.setHeader('Content-Disposition', 'attachment; filename="deskbridge-host.mjs"');
       res.send(content);
       return;
     }
 
-    const content = generatePowerShellHostScript({ wsUrl, appUrl, hostName, groupLabel });
+    const content = generatePowerShellHostScript({ wsUrl, appUrl, hostName, groupLabel, enrollKey: auth.enrollKey });
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="DeskBridge-Host.ps1"');
     res.send(content);
@@ -364,11 +431,26 @@ async function startServer() {
   }
 
   const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: WS_MAX_PAYLOAD });
 
   wss.on('connection', (ws, req) => {
     let ownedHostId: string | null = null;
     controllerHostMap.set(ws, new Set());
+
+    // Controllers must hold an owner session cookie from this origin. Unauthenticated
+    // sockets may only register as a host agent using the enrollment key.
+    const isOwner = isSameOrigin(req) && isRequestAuthenticated(auth, req);
+
+    // Without an error listener, a protocol error (e.g. an oversized frame) throws and
+    // takes down the whole relay process.
+    ws.on('error', (err) => {
+      console.warn('WebSocket error:', err.message);
+    });
+
+    const rejectHost = (reason: string) => {
+      sendJson(ws, 'host:auth_error', { error: reason });
+      ws.close(4401, 'Host authentication failed');
+    };
 
     const rawProto = (req.headers['x-forwarded-proto'] as string) || 'http';
     const rawHost = (req.headers['x-forwarded-host'] as string) || req.headers.host || `localhost:${PORT}`;
@@ -396,9 +478,21 @@ async function startServer() {
         } catch {
           return;
         }
-        const hostId = String(meta.hostId || ownedHostId || '');
-        const entry = hosts.get(hostId);
-        if (!entry) return;
+        // Frames are always attributed to the host this socket registered, never to a
+        // client-supplied id. Rewrite the header if needed so controllers see the truth.
+        if (!ownedHostId) return;
+        const entry = hosts.get(ownedHostId);
+        if (!entry || entry.ws !== ws) return;
+        let outBuf = buf;
+        if (meta.hostId !== ownedHostId) {
+          const fixedMeta = Buffer.from(JSON.stringify({ ...meta, hostId: ownedHostId }), 'utf8');
+          if (fixedMeta.length > 0xffff) return;
+          const header = Buffer.alloc(4);
+          header[0] = 0x44;
+          header[1] = 0x01;
+          header.writeUInt16BE(fixedMeta.length, 2);
+          outBuf = Buffer.concat([header, fixedMeta, buf.subarray(4 + headerLen)]);
+        }
         entry.latestJpeg = Buffer.from(buf.subarray(4 + headerLen));
         entry.latestFrame = undefined;
         entry.profile.lastSeen = Date.now();
@@ -408,7 +502,7 @@ async function startServer() {
         }
         for (const ctrl of entry.controllers) {
           if (ctrl.readyState === WebSocket.OPEN && ctrl.bufferedAmount < 512 * 1024) {
-            ctrl.send(buf, { binary: true });
+            ctrl.send(outBuf, { binary: true });
           }
         }
         return;
@@ -425,8 +519,35 @@ async function startServer() {
       const payload = msg.payload || {};
 
       if (event === 'host:register') {
-        const hostId = String(payload.hostId || `pc-${Date.now()}`);
+        if (!isOwner && !safeEqual(payload.enrollKey, auth.enrollKey)) {
+          rejectHost('Invalid or missing enrollment key. Download a fresh agent script from the DeskBridge Host tab.');
+          return;
+        }
+        if (ownedHostId) {
+          sendJson(ws, 'host:auth_error', { error: 'This connection already registered a host.' });
+          return;
+        }
+        const requestedId = typeof payload.hostId === 'string' ? payload.hostId : '';
+        const hostId = HOST_ID_PATTERN.test(requestedId) ? requestedId : `pc-${crypto.randomUUID().slice(0, 8)}`;
         const existing = hosts.get(hostId);
+
+        // A host id that already has a secret can only be reclaimed by the agent that
+        // holds it (or by the logged-in owner running browser host mode).
+        let issuedSecret: string | undefined;
+        let secretHash = existing?.secretHash;
+        if (secretHash) {
+          if (!isOwner && !verifySecret(payload.hostSecret, secretHash)) {
+            rejectHost('Host secret mismatch for this host id. Delete the host from the Fleet tab to re-enroll it.');
+            return;
+          }
+        } else if (!isOwner) {
+          issuedSecret = generateHostSecret();
+          secretHash = hashSecret(issuedSecret);
+        }
+
+        if (existing?.ws && existing.ws !== ws && existing.ws.readyState === WebSocket.OPEN) {
+          existing.ws.close(4409, 'Replaced by a newer host connection');
+        }
         const pairingCode = existing?.profile.pairingCode || generatePairingCode();
         const pairingUrl = `${baseUrl}/?pair=${pairingCode}&host=${encodeURIComponent(hostId)}`;
 
@@ -454,6 +575,8 @@ async function startServer() {
           ws,
           controllers,
           latestFrame: existing?.latestFrame,
+          latestJpeg: existing?.latestJpeg,
+          secretHash,
         });
         ownedHostId = hostId;
 
@@ -463,6 +586,7 @@ async function startServer() {
           pairingCode,
           pairingUrl,
           controllerCount: controllers.size,
+          ...(issuedSecret ? { hostSecret: issuedSecret } : {}),
         });
         sendJson(ws, 'host:controller_count', { count: controllers.size });
         broadcastFleet();
@@ -471,7 +595,7 @@ async function startServer() {
 
       if (event === 'host:regenerate_code' && ownedHostId) {
         const entry = hosts.get(ownedHostId);
-        if (!entry) return;
+        if (!entry || entry.ws !== ws) return;
         const pairingCode = generatePairingCode();
         const pairingUrl = `${baseUrl}/?pair=${pairingCode}&host=${encodeURIComponent(ownedHostId)}`;
         entry.profile.pairingCode = pairingCode;
@@ -488,9 +612,10 @@ async function startServer() {
       }
 
       if (event === 'host:frame') {
-        const hostId = String(payload.hostId || ownedHostId || '');
+        if (!ownedHostId) return;
+        const hostId = ownedHostId;
         const entry = hosts.get(hostId);
-        if (!entry) return;
+        if (!entry || entry.ws !== ws) return;
         const frame = typeof payload.frame === 'string' ? payload.frame : '';
         if (frame) {
           entry.latestFrame = frame;
@@ -520,6 +645,12 @@ async function startServer() {
             });
           }
         }
+        return;
+      }
+
+      if (typeof event === 'string' && event.startsWith('client:') && !isOwner) {
+        sendJson(ws, 'auth:required', { error: 'Authentication required.' });
+        ws.close(4401, 'Authentication required');
         return;
       }
 
@@ -625,6 +756,12 @@ async function startServer() {
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`DeskBridge server listening on http://0.0.0.0:${PORT}`);
+    if (auth.tokenFromStore) {
+      console.log('');
+      console.log(`  Owner access token${auth.generatedToken ? ' (newly generated)' : ''}: ${auth.accessToken}`);
+      console.log(`  Stored in ${path.basename(AUTH_STORE_PATH)}. Set DESKBRIDGE_ACCESS_TOKEN to choose your own.`);
+      console.log('');
+    }
   });
 }
 

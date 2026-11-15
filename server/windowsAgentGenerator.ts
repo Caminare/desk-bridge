@@ -3,6 +3,8 @@ export interface WindowsAgentOptions {
   appUrl: string;
   hostName: string;
   groupLabel: string;
+  /** Server enrollment key embedded in the script; lets the agent register. */
+  enrollKey: string;
 }
 
 export function generatePowerShellHostScript(opts: WindowsAgentOptions): string {
@@ -10,11 +12,15 @@ export function generatePowerShellHostScript(opts: WindowsAgentOptions): string 
   const safeGroup = opts.groupLabel.replace(/'/g, "''");
   const safeWsUrl = opts.wsUrl.replace(/'/g, "''");
   const safeAppUrl = opts.appUrl.replace(/'/g, "''");
+  const safeEnrollKey = opts.enrollKey.replace(/'/g, "''");
 
   return `<#
   DeskBridge Windows Host Agent
   Exposes this Windows PC to your DeskBridge mobile controller over encrypted WebSockets.
   Works natively on Windows 10 / 11 with PowerShell 5.1+ (.NET Framework).
+
+  SECURITY: this script contains your DeskBridge enrollment key. Anyone holding it
+  can register a machine with your relay. Do not share or commit it.
 #>
 
 param(
@@ -22,6 +28,7 @@ param(
   [string]$GroupLabel = '${safeGroup}',
   [string]$RelayWsUrl = '${safeWsUrl}',
   [string]$AppBaseUrl = '${safeAppUrl}',
+  [string]$EnrollKey = '${safeEnrollKey}',
   [int]$FrameIntervalMs = 80,
   [int]$JpegQuality = 62,
   [int]$MaxStreamWidth = 1152
@@ -114,6 +121,13 @@ if (Test-Path $hostIdFile) {
 } else {
   $HostId = "win-" + ([guid]::NewGuid().ToString("N").Substring(0, 8))
   $HostId | Out-File -FilePath $hostIdFile -Encoding ascii -NoNewline
+}
+
+# Per-host secret issued by the relay on first registration; proves this machine owns $HostId.
+$hostSecretFile = Join-Path $env:APPDATA "DeskBridge-host-secret.txt"
+$script:HostSecret = ''
+if (Test-Path $hostSecretFile) {
+  $script:HostSecret = (Get-Content $hostSecretFile -Raw).Trim()
 }
 
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -359,6 +373,7 @@ Write-Host "  Resolution : \${screenW}x\${screenH}" -ForegroundColor Gray
 Write-Host "=====================================================" -ForegroundColor Cyan
 
 while ($true) {
+  $script:AuthRejected = $false
   $ws = New-Object System.Net.WebSockets.ClientWebSocket
   $ws.Options.SetRequestHeader('ngrok-skip-browser-warning', 'true')
   try {
@@ -375,6 +390,8 @@ while ($true) {
         screenWidth = $screenW
         screenHeight = $screenH
         agentType = 'windows-native'
+        enrollKey = $EnrollKey
+        hostSecret = $script:HostSecret
       }
     }
 
@@ -418,7 +435,14 @@ while ($true) {
           $recvMs.SetLength(0)
           $msg = $jsonSerializer.DeserializeObject($msgText)
 
-          if ($msg.event -eq 'host:registered') {
+          if ($msg.event -eq 'host:auth_error') {
+            Write-Host "Relay rejected this agent: $($msg.payload.error)" -ForegroundColor Red
+            $script:AuthRejected = $true
+          } elseif ($msg.event -eq 'host:registered') {
+            if ($msg.payload.ContainsKey('hostSecret') -and $msg.payload.hostSecret) {
+              $script:HostSecret = [string]$msg.payload.hostSecret
+              $script:HostSecret | Out-File -FilePath $hostSecretFile -Encoding ascii -NoNewline
+            }
             $code = $msg.payload.pairingCode
             $pairUrl = "$AppBaseUrl/?pair=$code&host=$HostId"
             Write-Host ""
@@ -504,7 +528,12 @@ while ($true) {
   } finally {
     $ws.Dispose()
   }
-  Start-Sleep -Seconds 4
+  if ($script:AuthRejected) {
+    Write-Host "Retrying in 60s. Re-download the agent from the DeskBridge Host tab if this keeps happening." -ForegroundColor Yellow
+    Start-Sleep -Seconds 60
+  } else {
+    Start-Sleep -Seconds 4
+  }
 }
 `;
 }
@@ -521,14 +550,47 @@ pause
 export function generateNodeHostScript(opts: WindowsAgentOptions): string {
   return `// DeskBridge Cross-Platform Node.js Host Agent (Node 22+)
 // Run: node deskbridge-host.mjs
+// SECURITY: this file contains your DeskBridge enrollment key. Do not share or commit it.
 import os from 'node:os';
-import { exec } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { exec, execFile } from 'node:child_process';
 
 const RELAY_WS_URL = ${JSON.stringify(opts.wsUrl)};
 const APP_URL = ${JSON.stringify(opts.appUrl)};
 const HOST_NAME = process.env.DESKBRIDGE_NAME || ${JSON.stringify(opts.hostName)};
 const GROUP_LABEL = process.env.DESKBRIDGE_GROUP || ${JSON.stringify(opts.groupLabel)};
+const ENROLL_KEY = ${JSON.stringify(opts.enrollKey)};
 const HOST_ID = 'node-' + os.hostname().toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
+const SECRET_FILE = path.join(os.homedir(), '.deskbridge-host.json');
+
+function loadHostSecret() {
+  try {
+    const data = JSON.parse(fs.readFileSync(SECRET_FILE, 'utf8'));
+    return data.hostId === HOST_ID ? String(data.hostSecret || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function saveHostSecret(secret) {
+  fs.writeFileSync(SECRET_FILE, JSON.stringify({ hostId: HOST_ID, hostSecret: secret }), { mode: 0o600 });
+}
+
+// Open a file, app or URL without passing the target through a shell.
+function launchTarget(target) {
+  if (process.platform === 'win32') {
+    execFile('powershell.exe', ['-NoProfile', '-Command', 'Start-Process -FilePath $env:DESKBRIDGE_TARGET'], {
+      env: { ...process.env, DESKBRIDGE_TARGET: target },
+    });
+  } else if (process.platform === 'darwin') {
+    execFile('open', [target]);
+  } else {
+    execFile('xdg-open', [target]);
+  }
+}
+
+let retryDelayMs = 4000;
 
 function connect() {
   const ws = new WebSocket(RELAY_WS_URL);
@@ -543,21 +605,27 @@ function connect() {
         screenWidth: 1920,
         screenHeight: 1080,
         agentType: 'windows-native',
+        enrollKey: ENROLL_KEY,
+        hostSecret: loadHostSecret(),
       },
     }));
   });
 
   ws.addEventListener('message', (evt) => {
     const msg = JSON.parse(String(evt.data));
-    if (msg.event === 'host:registered') {
+    if (msg.event === 'host:auth_error') {
+      console.error(\`[DeskBridge] Relay rejected this agent: \${msg.payload.error}\`);
+      retryDelayMs = 60000;
+    } else if (msg.event === 'host:registered') {
+      retryDelayMs = 4000;
+      if (msg.payload.hostSecret) saveHostSecret(msg.payload.hostSecret);
       console.log(\`[DeskBridge] Paired Host Ready: \${HOST_NAME}\`);
       console.log(\`[DeskBridge] Pairing Code: \${msg.payload.pairingCode}\`);
       console.log(\`[DeskBridge] Pair URL: \${APP_URL}/?pair=\${msg.payload.pairingCode}&host=\${HOST_ID}\`);
     } else if (msg.event === 'client:input') {
       const input = msg.payload;
       if (input.type === 'launch' && input.target) {
-        const cmd = process.platform === 'win32' ? \`start "" "\${input.target}"\` : \`open "\${input.target}"\`;
-        exec(cmd);
+        launchTarget(String(input.target));
       } else if (input.type === 'shell' && input.command) {
         exec(input.command, (err, stdout, stderr) => {
           console.log('[Shell]', stdout || stderr || err?.message || 'done');
@@ -567,8 +635,8 @@ function connect() {
   });
 
   ws.addEventListener('close', () => {
-    console.log('[DeskBridge] Disconnected. Reconnecting in 4s...');
-    setTimeout(connect, 4000);
+    console.log(\`[DeskBridge] Disconnected. Reconnecting in \${retryDelayMs / 1000}s...\`);
+    setTimeout(connect, retryDelayMs);
   });
 }
 

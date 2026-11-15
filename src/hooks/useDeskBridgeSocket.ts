@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActivityLogEntry, HostProfile, RemoteInputEvent } from '../types/deskbridge';
+import { apiFetch, notifyUnauthorized } from '../lib/auth';
 
 function getWsEndpoint(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -9,6 +10,7 @@ function getWsEndpoint(): string {
 export function useDeskBridgeSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const disposedRef = useRef(false);
   const activeHostIdRef = useRef<string | null>(null);
   const blobUrlsByHostRef = useRef<Record<string, string>>({});
   const hostLastMetaAtRef = useRef<Record<string, { ts: number; win?: string }>>({});
@@ -72,6 +74,7 @@ export function useDeskBridgeSocket() {
   }, []);
 
   const connect = useCallback(() => {
+    if (disposedRef.current) return;
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -142,7 +145,9 @@ export function useDeskBridgeSocket() {
         return;
       }
 
-      if (msg.event === 'fleet:update' && Array.isArray(msg.payload)) {
+      if (msg.event === 'auth:required') {
+        notifyUnauthorized();
+      } else if (msg.event === 'fleet:update' && Array.isArray(msg.payload)) {
         const list = msg.payload as HostProfile[];
         setHosts(list);
       } else if (msg.event === 'client:paired' && msg.payload) {
@@ -192,17 +197,24 @@ export function useDeskBridgeSocket() {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (evt) => {
       setWsConnected(false);
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      if (disposedRef.current) return;
+      if (evt.code === 4401) {
+        notifyUnauthorized();
+        return;
+      }
       reconnectTimerRef.current = window.setTimeout(connect, 2500);
     };
   }, [appendActivity, applyHostMeta]);
 
   useEffect(() => {
+    disposedRef.current = false;
     connect();
     const urlsMap = blobUrlsByHostRef.current;
     return () => {
+      disposedRef.current = true;
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
       Object.values(urlsMap).forEach((u) => URL.revokeObjectURL(u));
@@ -224,7 +236,7 @@ export function useDeskBridgeSocket() {
   const pairByQrOrCode = useCallback(
     async (rawInput: string): Promise<HostProfile | null> => {
       setPairError(null);
-      const res = await fetch('/api/hosts/pair-code', {
+      const res = await apiFetch('/api/hosts/pair-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: rawInput }),
@@ -273,7 +285,7 @@ export function useDeskBridgeSocket() {
   );
 
   const renameHost = useCallback(async (hostId: string, name: string, groupLabel: string) => {
-    const res = await fetch(`/api/hosts/${encodeURIComponent(hostId)}`, {
+    const res = await apiFetch(`/api/hosts/${encodeURIComponent(hostId)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, groupLabel }),
@@ -285,7 +297,7 @@ export function useDeskBridgeSocket() {
   }, []);
 
   const removeHost = useCallback(async (hostId: string) => {
-    const res = await fetch(`/api/hosts/${encodeURIComponent(hostId)}`, { method: 'DELETE' });
+    const res = await apiFetch(`/api/hosts/${encodeURIComponent(hostId)}`, { method: 'DELETE' });
     if (res.ok) {
       setHosts((prev) => prev.filter((h) => h.hostId !== hostId));
       if (activeHostIdRef.current === hostId) {

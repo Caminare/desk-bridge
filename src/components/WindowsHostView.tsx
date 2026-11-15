@@ -13,6 +13,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import type { RemoteInputEvent } from '../types/deskbridge';
+import { apiFetch } from '../lib/auth';
 import wallpaperUrl from '../assets/images/windows_studio_wallpaper_1794751481490.jpg';
 
 interface WindowsHostViewProps {
@@ -553,7 +554,7 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
         setPairingUrl(url);
         setControllerCount(Number(msg.payload.controllerCount || 0));
         try {
-          const res = await fetch(`/api/qr?data=${encodeURIComponent(url)}`);
+          const res = await apiFetch(`/api/qr?data=${encodeURIComponent(url)}`);
           const data = await res.json();
           if (data.dataUrl) setQrDataUrl(data.dataUrl);
         } catch {
