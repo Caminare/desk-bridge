@@ -130,6 +130,33 @@ Agent tuning parameters (`DeskBridge-Host.ps1 -Name value`): `-MaxStreamWidth` /
 
 ---
 
+## Deploying on a VPS (recommended)
+
+A small Linux VPS near you (e.g. a 1 vCPU / 1 GB plan in your country) gives the lowest latency and no tunnel limits. Each frame goes PC → VPS → phone.
+
+1. **Create an Ubuntu 24.04 server** with a public IPv4 address. Allow inbound TCP 22, 80 and 443 in the provider's firewall.
+2. **Point a domain at it.** A free subdomain from duckdns.org works. HTTPS is required for the phone's camera and microphone.
+3. **SSH in and run the setup script:**
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Caminare/desk-bridge/main/deploy/setup-ubuntu.sh -o setup.sh
+   ```
+   ```bash
+   sudo bash setup.sh --domain yourname.duckdns.org
+   ```
+   It installs Node 22, Caddy (automatic HTTPS), a firewall and swap, builds DeskBridge, runs it as a `deskbridge` systemd service on `127.0.0.1:3000`, and prints your **access token**. Re-running it is safe. Use `--branch NAME` to deploy a branch other than `main`.
+4. **Open `https://yourname.duckdns.org`** on your phone and sign in with the token. **Re-download `DeskBridge-Host.ps1` on each PC** from the Windows Host tab, so it connects to the new address.
+
+Day to day:
+```bash
+journalctl -u deskbridge -f                       # live logs
+sudo nano /etc/deskbridge.env                     # settings (e.g. GEMINI_API_KEY), then:
+sudo systemctl restart deskbridge
+sudo bash /opt/deskbridge/app/deploy/update.sh    # update to the latest code
+```
+State (access token, enrollment key, paired hosts) lives in `/var/lib/deskbridge`. Back up that folder and `/etc/deskbridge.env`.
+
+---
+
 ## Exposing DeskBridge Over the Internet with ngrok (Step-by-Step)
 
 You only need **one** DeskBridge server + **one** ngrok tunnel to control **all** of your Windows computers from a **single URL** on your Android phone.

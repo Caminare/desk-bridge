@@ -417,3 +417,38 @@ describe('tiled (v2) frames, keyframes and adaptive quality', () => {
     assert.equal(c.binaries.length, 1);
   });
 });
+
+describe('login rate limiting behind a proxy', () => {
+  const tryLogin = (base: string, ip: string) =>
+    fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip },
+      body: JSON.stringify({ token: 'wrong' }),
+    });
+
+  test('with trustProxy, one client hitting the limit does not lock out others', async () => {
+    const t = await startTestRelay({ trustProxy: true });
+    try {
+      for (let i = 0; i < 10; i++) await tryLogin(t.base, '203.0.113.7');
+      assert.equal((await tryLogin(t.base, '203.0.113.7')).status, 429, 'attacker blocked');
+      const other = await fetch(`${t.base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '198.51.100.9' },
+        body: JSON.stringify({ token: 'test-owner-token-0123456789' }),
+      });
+      assert.equal(other.status, 200, 'owner from another IP can still log in');
+    } finally {
+      await t.stop();
+    }
+  });
+
+  test('without trustProxy, a spoofed X-Forwarded-For does not bypass the limit', async () => {
+    const t = await startTestRelay();
+    try {
+      for (let i = 0; i < 10; i++) await tryLogin(t.base, `10.0.0.${i}`);
+      assert.equal((await tryLogin(t.base, '10.0.0.99')).status, 429);
+    } finally {
+      await t.stop();
+    }
+  });
+});

@@ -33,6 +33,7 @@ DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse,
 | `src/types/deskbridge.ts` | Shared types between server and client (`HostProfile`, `RemoteInputEvent`, AI types). |
 | `tests/` | `node:test` suites run through `tsx`: `relay.test.ts` (REST + WebSocket protocol, heartbeat, AI limits), `auth.test.ts`, `agentGenerator.test.ts`, `streamCoords.test.ts`, `virtualDesktop.test.ts`. `helpers.ts` starts an in-process relay on a free port with a temp data dir. |
 | `.github/workflows/ci.yml` | CI: `bun install --frozen-lockfile`, lint, test, build. |
+| `deploy/setup-ubuntu.sh`, `deploy/update.sh` | One-command VPS install (Node 22, Caddy HTTPS, systemd service as user `deskbridge`, ufw, swap) and updater. Keep them idempotent; the env file and `/var/lib/deskbridge` state must survive re-runs. |
 
 Runtime state (git-ignored, contains secrets, never commit): `.deskbridge-auth.json`, `.deskbridge-hosts.json`, `.env`.
 
@@ -69,6 +70,8 @@ If you change dependencies, run `bun install` so `bun.lock` stays in sync. CI us
 | `AI_RATE_LIMIT_PER_MIN` | AI requests per session per minute. Default 20. |
 | `GEMINI_MODEL`, `GEMINI_TRANSCRIBE_MODEL` | Override the primary model ids. |
 | `PORT` | Listen port. Default 3000. |
+| `HOST` | Bind address. Default `0.0.0.0`; the VPS setup uses `127.0.0.1` behind Caddy. |
+| `TRUST_PROXY` | `1` to take the login-limiter client IP from the rightmost `X-Forwarded-For` entry. Only enable it behind a trusted proxy with the relay port not publicly reachable. |
 
 ## Wire protocol
 
