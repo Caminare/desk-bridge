@@ -132,28 +132,122 @@ Agent tuning parameters (`DeskBridge-Host.ps1 -Name value`): `-MaxStreamWidth` /
 
 ## Deploying on a VPS (recommended)
 
-A small Linux VPS near you (e.g. a 1 vCPU / 1 GB plan in your country) gives the lowest latency and no tunnel limits. Each frame goes PC → VPS → phone.
+Running the relay on a small Linux VPS near you gives the lowest latency and no tunnel limits: each frame goes PC → VPS → phone. A 1 vCPU / 1 GB plan (about $5/month) is enough. The steps below use [Vultr](https://www.vultr.com) as the example, but any provider with Ubuntu works the same.
 
-1. **Create an Ubuntu 24.04 server** with a public IPv4 address. Allow inbound TCP 22, 80 and 443 in the provider's firewall.
-2. **Point a domain at it.** A free subdomain from duckdns.org works. HTTPS is required for the phone's camera and microphone.
-3. **SSH in and run the setup script:**
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/Caminare/desk-bridge/main/deploy/setup-ubuntu.sh -o setup.sh
-   ```
-   ```bash
-   sudo bash setup.sh --domain yourname.duckdns.org
-   ```
-   It installs Node 22, Caddy (automatic HTTPS), a firewall and swap, builds DeskBridge, runs it as a `deskbridge` systemd service on `127.0.0.1:3000`, and prints your **access token**. Re-running it is safe. Use `--branch NAME` to deploy a branch other than `main`.
-4. **Open `https://yourname.duckdns.org`** on your phone and sign in with the token. **Re-download `DeskBridge-Host.ps1` on each PC** from the Windows Host tab, so it connects to the new address.
+### 1. Create the server
 
-Day to day:
+1. **Create an SSH key** on your computer if you don't have one (Git Bash, macOS or Linux terminal):
+   ```bash
+   ssh-keygen -t ed25519
+   ```
+   Your **public** key is `~/.ssh/id_ed25519.pub`; that's the one you give to the provider. If you only have a private key, print its public key with `ssh-keygen -y -f ~/.ssh/id_rsa`. Never upload the private key.
+2. **Deploy a server** in your provider's panel:
+   - **Location:** the region closest to you and your PCs.
+   - **Image:** Ubuntu 24.04 LTS.
+   - **Plan:** the cheapest plan **with IPv4** (1 vCPU / 1 GB). Avoid "IPv6 only" plans.
+   - **SSH key:** add your public key and select it.
+   - **Extras:** no backups, VPC, startup script or DDoS add-on needed.
+3. **Firewall:** in the provider's firewall (Vultr: *Network → Firewall*), allow inbound **TCP 22, 80 and 443** from anywhere, and attach it to the server. Use *Anywhere* for SSH rather than *My IP*: home and mobile IPs change, which would lock you out.
+4. **Domain:** HTTPS is required (the phone's camera and microphone only work over HTTPS). Create a free subdomain at [duckdns.org](https://www.duckdns.org) (e.g. `yourname.duckdns.org`) and set it to the server's **IPv4 address**.
+
+### 2. Install DeskBridge
+
+Connect to the server:
 ```bash
-journalctl -u deskbridge -f                       # live logs
-sudo nano /etc/deskbridge.env                     # settings (e.g. GEMINI_API_KEY), then:
-sudo systemctl restart deskbridge
-sudo bash /opt/deskbridge/app/deploy/update.sh    # update to the latest code
+ssh root@YOUR_SERVER_IP
 ```
-State (access token, enrollment key, paired hosts) lives in `/var/lib/deskbridge`. Back up that folder and `/etc/deskbridge.env`.
+Download and run the setup script, using your domain:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Caminare/desk-bridge/main/deploy/setup-ubuntu.sh -o setup.sh
+```
+```bash
+bash setup.sh --domain yourname.duckdns.org
+```
+
+The script takes 3–6 minutes on a small server. On a brand-new server it may first wait a few minutes for Ubuntu's automatic updates to finish. It:
+- installs Node.js 22, Caddy (automatic HTTPS certificates), the `ufw` firewall and a 2 GB swap file;
+- downloads and builds DeskBridge into `/opt/deskbridge/app`;
+- writes the settings file `/etc/deskbridge.env` with a generated **access token**;
+- runs DeskBridge as the `deskbridge` system service, **started automatically at boot**;
+- prints the access token at the end. **Save it**; you sign in with it.
+
+To deploy a branch other than `main`, add `--branch NAME`. Re-running the script is safe: it keeps your token and paired PCs.
+
+### 3. First use
+
+1. On your phone, open `https://yourname.duckdns.org` and sign in with the access token.
+2. On each Windows PC, open the same address, go to **Windows Host**, download **`DeskBridge-Host.ps1`** (and `Start-DeskBridge.bat`) **again**, and start it. Agents downloaded from another address (e.g. an old ngrok URL) won't connect.
+3. Pair each PC from the phone (Scan QR or pairing code).
+
+### Settings (token, Gemini, address)
+
+All settings live in `/etc/deskbridge.env` on the server:
+```bash
+nano /etc/deskbridge.env
+```
+- **Gemini assistant:** set `GEMINI_API_KEY=your_key` (remove the leading `#`). Get a key at [Google AI Studio](https://aistudio.google.com).
+- **Your own access token:** change `DESKBRIDGE_ACCESS_TOKEN=` (at least 16 characters). This signs out every phone and browser.
+- **Show the current token:** `grep DESKBRIDGE_ACCESS_TOKEN /etc/deskbridge.env`
+- `APP_URL` is set from `--domain`. To change the domain, re-run the setup script with the new `--domain`, then re-download the agent on each PC.
+
+Save (in nano: `Ctrl+O`, Enter, `Ctrl+X`) and restart to apply:
+```bash
+systemctl restart deskbridge
+```
+
+### Updating to a new version
+
+```bash
+bash /opt/deskbridge/app/deploy/update.sh
+```
+This fetches the latest code from the branch you deployed, rebuilds and restarts. Your settings and paired PCs are kept. Use `--branch NAME` to switch branches. If the release changed the Windows agent, re-download `DeskBridge-Host.ps1` on each PC.
+
+### Starting, stopping and checking the service
+
+| Task | Command |
+|---|---|
+| Status (should say `active (running)`) | `systemctl status deskbridge --no-pager` |
+| Stop | `systemctl stop deskbridge` |
+| Start | `systemctl start deskbridge` |
+| Restart (after changing settings) | `systemctl restart deskbridge` |
+| Live logs (`Ctrl+C` to exit) | `journalctl -u deskbridge -f` |
+| Last 100 log lines | `journalctl -u deskbridge -n 100 --no-pager` |
+| Don't start at boot / start at boot again | `systemctl disable deskbridge` / `systemctl enable deskbridge` |
+| HTTPS proxy status | `systemctl status caddy --no-pager` |
+
+### Stopping and starting the VPS
+
+- **Nothing to do after a restart.** DeskBridge and Caddy are system services that start automatically when the server boots. Start the VPS in your provider's panel, wait about a minute, and open your address again. Windows agents that were left running reconnect by themselves every few seconds; otherwise start them again on the PC.
+- **The IP address stays the same** across stop/start on most providers (including Vultr), so the DuckDNS domain keeps working. If your provider ever assigns a new IP, update it at duckdns.org.
+- **Billing:** on Vultr (and most providers), **a stopped server is still billed**. Only *Destroy* stops the charges, and destroying deletes the server: you would have to run the setup again and re-pair your PCs.
+
+### Backups
+
+Everything DeskBridge needs to survive a rebuild is the settings file and the state folder (enrollment key, paired PCs):
+```bash
+tar czf deskbridge-backup.tgz /etc/deskbridge.env /var/lib/deskbridge
+```
+Copy it to your computer (run this on your computer, not the server):
+```bash
+scp root@YOUR_SERVER_IP:deskbridge-backup.tgz .
+```
+To restore on a new server, run the setup script first, copy the backup over, then on the server:
+```bash
+tar xzf deskbridge-backup.tgz -C /
+```
+```bash
+chown -R deskbridge:deskbridge /var/lib/deskbridge && chown root:deskbridge /etc/deskbridge.env
+```
+```bash
+systemctl restart deskbridge
+```
+
+### Troubleshooting
+
+- **SSH hangs or times out after adding a firewall:** the provider's firewall is missing an *accept TCP 22 from Anywhere* rule (IPv4), or it uses *My IP* and your IP changed. Vultr's *View Console* gives browser access regardless of the firewall.
+- **`Could not get lock /var/lib/dpkg/lock-frontend`:** automatic updates are running on a new server. Wait a few minutes and run the setup again. Never delete the lock file.
+- **The site doesn't load or shows a certificate error:** make sure the domain points at the server's IPv4 address (`ping yourname.duckdns.org`) and ports 80/443 are open, then check `journalctl -u caddy -n 50 --no-pager`.
+- **Login works but PCs don't appear:** re-download the agent from the new address, and check `journalctl -u deskbridge -f` while the agent starts.
 
 ---
 
