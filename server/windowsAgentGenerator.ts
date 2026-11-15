@@ -23,7 +23,8 @@ param(
   [string]$RelayWsUrl = '${safeWsUrl}',
   [string]$AppBaseUrl = '${safeAppUrl}',
   [int]$FrameIntervalMs = 130,
-  [int]$JpegQuality = 48
+  [int]$JpegQuality = 78,
+  [int]$MaxStreamWidth = 1600
 )
 
 $ErrorActionPreference = 'Stop'
@@ -97,21 +98,47 @@ $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where
 $encoderParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
 $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$JpegQuality)
 
-$targetW = [Math]::Min(1024, $screenW)
-$targetH = [int]([Math]::Round($screenH * ($targetW / $screenW)))
 $capBmp = New-Object System.Drawing.Bitmap($screenW, $screenH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
 $capG = [System.Drawing.Graphics]::FromImage($capBmp)
-$scaledBmp = New-Object System.Drawing.Bitmap($targetW, $targetH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
-$scaledG = [System.Drawing.Graphics]::FromImage($scaledBmp)
-$scaledG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Low
-$scaledG.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
 $capMs = New-Object System.IO.MemoryStream
+$script:targetW = 0
+$script:targetH = 0
+$script:scaledBmp = $null
+$script:scaledG = $null
+
+function Update-CaptureConfig([int]$maxW, [int]$quality) {
+  $q = [Math]::Max(30, [Math]::Min(95, $quality))
+  $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$q)
+  $nextW = [Math]::Min([Math]::Max(640, $maxW), $screenW)
+  $nextH = [int]([Math]::Round($screenH * ($nextW / $screenW)))
+  if ($nextW -ne $script:targetW -or $nextH -ne $script:targetH) {
+    if ($null -ne $script:scaledG) { $script:scaledG.Dispose() }
+    if ($null -ne $script:scaledBmp) { $script:scaledBmp.Dispose() }
+    $script:targetW = $nextW
+    $script:targetH = $nextH
+    if ($nextW -lt $screenW) {
+      $script:scaledBmp = New-Object System.Drawing.Bitmap($nextW, $nextH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+      $script:scaledG = [System.Drawing.Graphics]::FromImage($script:scaledBmp)
+      $script:scaledG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+      $script:scaledG.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
+    } else {
+      $script:scaledBmp = $null
+      $script:scaledG = $null
+    }
+  }
+}
+
+Update-CaptureConfig $MaxStreamWidth $JpegQuality
 
 function Capture-ScreenBase64 {
   $capG.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-  $scaledG.DrawImage($capBmp, 0, 0, $targetW, $targetH)
   $capMs.SetLength(0)
-  $scaledBmp.Save($capMs, $jpegCodec, $encoderParams)
+  if ($null -ne $script:scaledBmp -and $null -ne $script:scaledG) {
+    $script:scaledG.DrawImage($capBmp, 0, 0, $script:targetW, $script:targetH)
+    $script:scaledBmp.Save($capMs, $jpegCodec, $encoderParams)
+  } else {
+    $capBmp.Save($capMs, $jpegCodec, $encoderParams)
+  }
   $b64 = [Convert]::ToBase64String($capMs.GetBuffer(), 0, [int]$capMs.Length)
   return "data:image/jpeg;base64,$b64"
 }
@@ -139,9 +166,10 @@ function Handle-RemoteInput($evt) {
     }
     'click' {
       if ($null -ne $evt.x -and $null -ne $evt.y) {
-        $nx = [int]([Math]::Round([double]$evt.x * $screenW))
-        $ny = [int]([Math]::Round([double]$evt.y * $screenH))
-        [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
+        $nx = [Math]::Max(0, [Math]::Min($screenW - 1, [int]([Math]::Round([double]$evt.x * $screenW))))
+        $ny = [Math]::Max(0, [Math]::Min($screenH - 1, [int]([Math]::Round([double]$evt.y * $screenH))))
+        [DeskBridgeWin32]::SetCursorPos($bounds.X + $nx, $bounds.Y + $ny) | Out-Null
+        Start-Sleep -Milliseconds 12
       }
       if ($evt.button -eq 'right') {
         [DeskBridgeWin32]::mouse_event([DeskBridgeWin32]::MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, [UIntPtr]::Zero)
@@ -200,6 +228,11 @@ function Handle-RemoteInput($evt) {
     }
     'clipboard' {
       [System.Windows.Forms.Clipboard]::SetText([string]$evt.text)
+    }
+    'quality' {
+      $mw = if ($null -ne $evt.maxWidth) { [int]$evt.maxWidth } else { 1600 }
+      $jq = if ($null -ne $evt.jpegQuality) { [int]$evt.jpegQuality } else { 78 }
+      Update-CaptureConfig $mw $jq
     }
   }
 }

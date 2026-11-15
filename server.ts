@@ -452,7 +452,7 @@ async function startServer() {
           entry.profile.memoryUsage = payload.memoryUsage;
         }
         for (const ctrl of entry.controllers) {
-          if (ctrl.readyState === WebSocket.OPEN && ctrl.bufferedAmount < 512 * 1024) {
+          if (ctrl.readyState === WebSocket.OPEN && ctrl.bufferedAmount < 1024 * 1024) {
             sendJson(ctrl, 'host:frame', {
               hostId,
               frame,

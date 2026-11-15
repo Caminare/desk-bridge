@@ -70,6 +70,11 @@ export type RemoteInputEvent =
   | {
       type: 'clipboard';
       text: string;
+    }
+  | {
+      type: 'quality';
+      maxWidth: number;
+      jpegQuality: number;
     };
 
 export type AIModelProvider = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite' | (string & {});

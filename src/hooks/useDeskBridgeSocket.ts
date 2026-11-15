@@ -178,7 +178,7 @@ export function useDeskBridgeSocket() {
       const hostId = targetHostId || activeHostIdRef.current;
       if (!hostId) return false;
       const sent = sendWs('client:input', { hostId, input });
-      if (sent && input.type !== 'mousemove') {
+      if (sent && input.type !== 'mousemove' && input.type !== 'quality') {
         const summary =
           input.type === 'click'
             ? `${input.double ? 'Double-click' : `${input.button} click`}`
