@@ -90,7 +90,10 @@ test('PowerShell agent: capture pipeline runs on a thread and sends tiled frames
     "$msg.event -eq 'host:keyframe_request'",
     '$script:streamer.SetQuality($mw, $jq)',
     '$script:streamer.SetBounds($script:bounds)',
-    '[int]$MaxInFlight = 4',
+    '[int]$MaxInFlight = 32',
+    '$windowOpen = ($inFlight.Count -eq 0) -or ($inFlight.Count -lt $MaxInFlight -and $inFlightBytes -lt $byteBudget)',
+    '$stats.brtt = [Math]::Round($baseRttMs)',
+    'double pixelBudget = mw * (mw * 9.0 / 16.0);',
   ]) {
     assert.ok(ps1.includes(needle), `missing: ${needle}`);
   }

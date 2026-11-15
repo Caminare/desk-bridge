@@ -38,6 +38,10 @@ export interface AgentFrameStats {
   tt?: number;
   /** Frames currently awaiting an ack. */
   inf?: number;
+  /** Path baseline RTT (minimum over the recent window), ms. RTT - brtt = queuing delay. */
+  brtt?: number;
+  /** Agent send window, KB. */
+  win?: number;
 }
 
 export interface FrameHeader {

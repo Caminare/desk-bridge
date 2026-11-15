@@ -383,9 +383,16 @@ describe('tiled (v2) frames, keyframes and adaptive quality', () => {
     assert.equal(c2.event('client:paired')!.payload.latestFrame, 'data:image/jpeg;base64,AQI=');
   });
 
-  test('high RTT reported by the agent lowers quality; the user preset caps it', async () => {
+  test('a steady high RTT keeps quality; queuing above the baseline lowers it', async () => {
     const { h, c } = await setup('v2-d');
-    h.ws.send(key(1, { stats: { rtt: 900 } }));
+    const qualityMsgs = () => h.messages.filter((m) => m.event === 'client:input' && m.payload.type === 'quality');
+    // Long path, no congestion: RTT high but flat.
+    h.ws.send(key(1, { stats: { rtt: 600 } }));
+    h.ws.send(delta(2, { stats: { rtt: 610 } }));
+    await sleep(150);
+    assert.equal(qualityMsgs().length, 0, 'baseline RTT alone is not congestion');
+    // Frames start queuing: RTT climbs well above the 600 ms baseline.
+    h.ws.send(delta(3, { stats: { rtt: 1100 } }));
     await h.until((s) => s.messages.some((m) => m.event === 'client:input' && m.payload.type === 'quality'), 2000, 'quality down');
     const down = h.messages.filter((m) => m.event === 'client:input' && m.payload.type === 'quality').at(-1)!.payload;
     assert.ok(down.maxWidth < 1152, `stepped below default (${down.maxWidth})`);
