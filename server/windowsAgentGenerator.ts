@@ -22,9 +22,9 @@ param(
   [string]$GroupLabel = '${safeGroup}',
   [string]$RelayWsUrl = '${safeWsUrl}',
   [string]$AppBaseUrl = '${safeAppUrl}',
-  [int]$FrameIntervalMs = 100,
-  [int]$JpegQuality = 68,
-  [int]$MaxStreamWidth = 1280
+  [int]$FrameIntervalMs = 80,
+  [int]$JpegQuality = 62,
+  [int]$MaxStreamWidth = 1152
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,6 +66,7 @@ public static class DeskBridgeWin32 {
   public const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
   public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
   public const uint MOUSEEVENTF_WHEEL = 0x0800;
+  public const uint MOUSEEVENTF_HWHEEL = 0x01000;
   public const uint KEYEVENTF_KEYUP = 0x0002;
 
   [StructLayout(LayoutKind.Sequential)]
@@ -128,12 +129,24 @@ $capG = [System.Drawing.Graphics]::FromImage($capBmp)
 $capMs = New-Object System.IO.MemoryStream
 $script:targetW = 0
 $script:targetH = 0
+$script:targetQ = $JpegQuality
 $script:scaledBmp = $null
 $script:scaledG = $null
+$script:fastBmp = $null
+$script:fastG = $null
+$script:fastW = 0
+$script:fastH = 0
+$script:sendBuf = New-Object byte[] 2097152
+$script:fastEncoderParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
+$script:fastEncoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]50)
 
 function Update-CaptureConfig([int]$maxW, [int]$quality) {
   $q = [Math]::Max(30, [Math]::Min(95, $quality))
+  $script:targetQ = $q
   $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$q)
+  $fq = [Math]::Min(50, $q)
+  $script:fastEncoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$fq)
+
   $nextW = [Math]::Min([Math]::Max(640, $maxW), $screenW)
   $nextH = [int]([Math]::Round($screenH * ($nextW / $screenW)))
   if ($nextW -ne $script:targetW -or $nextH -ne $script:targetH) {
@@ -144,18 +157,35 @@ function Update-CaptureConfig([int]$maxW, [int]$quality) {
     if ($nextW -lt $screenW) {
       $script:scaledBmp = New-Object System.Drawing.Bitmap($nextW, $nextH, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
       $script:scaledG = [System.Drawing.Graphics]::FromImage($script:scaledBmp)
-      $script:scaledG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBilinear
+      $script:scaledG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
+      $script:scaledG.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
       $script:scaledG.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
+      $script:scaledG.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighSpeed
     } else {
       $script:scaledBmp = $null
       $script:scaledG = $null
     }
   }
+
+  $mw = [Math]::Min(880, $nextW)
+  $mh = [int]([Math]::Round($screenH * ($mw / $screenW)))
+  if ($mw -ne $script:fastW -or $mh -ne $script:fastH) {
+    if ($null -ne $script:fastG) { $script:fastG.Dispose() }
+    if ($null -ne $script:fastBmp) { $script:fastBmp.Dispose() }
+    $script:fastW = $mw
+    $script:fastH = $mh
+    $script:fastBmp = New-Object System.Drawing.Bitmap($mw, $mh, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $script:fastG = [System.Drawing.Graphics]::FromImage($script:fastBmp)
+    $script:fastG.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
+    $script:fastG.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+    $script:fastG.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
+    $script:fastG.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighSpeed
+  }
 }
 
 Update-CaptureConfig $MaxStreamWidth $JpegQuality
 
-function Capture-ScreenWithSig {
+function Capture-ScreenBinary([bool]$fastMotion) {
   $capG.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
   $hdc = $capG.GetHdc()
   try {
@@ -165,7 +195,10 @@ function Capture-ScreenWithSig {
   }
 
   $capMs.SetLength(0)
-  if ($null -ne $script:scaledBmp -and $null -ne $script:scaledG) {
+  if ($fastMotion -and $null -ne $script:fastBmp -and $null -ne $script:fastG) {
+    $script:fastG.DrawImage($capBmp, 0, 0, $script:fastW, $script:fastH)
+    $script:fastBmp.Save($capMs, $jpegCodec, $script:fastEncoderParams)
+  } elseif ($null -ne $script:scaledBmp -and $null -ne $script:scaledG) {
     $script:scaledG.DrawImage($capBmp, 0, 0, $script:targetW, $script:targetH)
     $script:scaledBmp.Save($capMs, $jpegCodec, $encoderParams)
   } else {
@@ -174,16 +207,15 @@ function Capture-ScreenWithSig {
 
   $len = [int]$capMs.Length
   $buf = $capMs.GetBuffer()
-  $sig = "$len"
+  $sig = if ($fastMotion) { "f:$len" } else { "h:$len" }
   if ($len -gt 64) {
     $step = [Math]::Max(1, [int]($len / 32))
     for ($i = 0; $i -lt $len; $i += $step) {
       $sig += ":$($buf[$i])"
     }
   }
-  $b64 = [Convert]::ToBase64String($buf, 0, $len)
   return @{
-    data = "data:image/jpeg;base64,$b64"
+    length = $len
     sig = $sig
   }
 }
@@ -195,18 +227,45 @@ function Send-WsJson($ws, $obj) {
   $ws.SendAsync($seg, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).Wait()
 }
 
+function Send-WsBinaryFrame($ws, [string]$hid, [int]$seq, [string]$activeWin, [long]$ts, [System.IO.MemoryStream]$jpegMs) {
+  $metaJson = $jsonSerializer.Serialize(@{
+    hostId = $hid
+    seq = $seq
+    activeWindow = $activeWin
+    timestamp = $ts
+  })
+  $metaBytes = [System.Text.Encoding]::UTF8.GetBytes($metaJson)
+  $metaLen = $metaBytes.Length
+  $jpegLen = [int]$jpegMs.Length
+  $totalLen = 4 + $metaLen + $jpegLen
+
+  if ($totalLen -gt $script:sendBuf.Length) {
+    $script:sendBuf = New-Object byte[] ($totalLen + 65536)
+  }
+
+  $script:sendBuf[0] = 0x44
+  $script:sendBuf[1] = 0x01
+  $script:sendBuf[2] = [byte](($metaLen -shr 8) -band 0xFF)
+  $script:sendBuf[3] = [byte]($metaLen -band 0xFF)
+  [Array]::Copy($metaBytes, 0, $script:sendBuf, 4, $metaLen)
+  [Array]::Copy($jpegMs.GetBuffer(), 0, $script:sendBuf, 4 + $metaLen, $jpegLen)
+
+  $seg = New-Object System.ArraySegment[byte]($script:sendBuf, 0, $totalLen)
+  $ws.SendAsync($seg, [System.Net.WebSockets.WebSocketMessageType]::Binary, $true, [System.Threading.CancellationToken]::None).Wait()
+}
+
 function Handle-RemoteInput($evt) {
   switch ($evt.type) {
     'mousemove' {
       if ($evt.relative -eq $true) {
         $pos = [System.Windows.Forms.Cursor]::Position
-        $nx = [Math]::Max(0, [Math]::Min($screenW - 1, $pos.X + [int]$evt.dx))
-        $ny = [Math]::Max(0, [Math]::Min($screenH - 1, $pos.Y + [int]$evt.dy))
+        $nx = [Math]::Max($bounds.X, [Math]::Min($bounds.X + $screenW - 1, $pos.X + [int]$evt.dx))
+        $ny = [Math]::Max($bounds.Y, [Math]::Min($bounds.Y + $screenH - 1, $pos.Y + [int]$evt.dy))
         [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
       } else {
-        $nx = [int]([Math]::Round([double]$evt.x * $screenW))
-        $ny = [int]([Math]::Round([double]$evt.y * $screenH))
-        [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
+        $nx = [Math]::Max(0, [Math]::Min($screenW - 1, [int]([Math]::Round([double]$evt.x * $screenW))))
+        $ny = [Math]::Max(0, [Math]::Min($screenH - 1, [int]([Math]::Round([double]$evt.y * $screenH))))
+        [DeskBridgeWin32]::SetCursorPos($bounds.X + $nx, $bounds.Y + $ny) | Out-Null
       }
     }
     'click' {
@@ -229,8 +288,18 @@ function Handle-RemoteInput($evt) {
       }
     }
     'scroll' {
-      $wheel = [int](-$evt.deltaY * 120)
-      [DeskBridgeWin32]::mouse_event([DeskBridgeWin32]::MOUSEEVENTF_WHEEL, 0, 0, $wheel, [UIntPtr]::Zero)
+      if ($null -ne $evt.deltaY -and [double]$evt.deltaY -ne 0) {
+        $wheel = [int]([Math]::Round(-[double]$evt.deltaY * 120))
+        if ($wheel -ne 0) {
+          [DeskBridgeWin32]::mouse_event([DeskBridgeWin32]::MOUSEEVENTF_WHEEL, 0, 0, $wheel, [UIntPtr]::Zero)
+        }
+      }
+      if ($null -ne $evt.deltaX -and [double]$evt.deltaX -ne 0) {
+        $hwheel = [int]([Math]::Round([double]$evt.deltaX * 120))
+        if ($hwheel -ne 0) {
+          [DeskBridgeWin32]::mouse_event([DeskBridgeWin32]::MOUSEEVENTF_HWHEEL, 0, 0, $hwheel, [UIntPtr]::Zero)
+        }
+      }
     }
     'type' {
       $escaped = [System.Text.RegularExpressions.Regex]::Replace([string]$evt.text, '([+^%~(){}\\[\\]])', '{$1}')
@@ -313,9 +382,11 @@ while ($true) {
     $recvMs = New-Object System.IO.MemoryStream
     $lastFrame = [DateTime]::MinValue
     $lastFrameSentAt = [DateTime]::MinValue
+    $motionUntil = [DateTime]::MinValue
+    $lastWasMotion = $false
     $lastSig = ''
-    $inFlightFrames = 0
     $frameSeq = 0
+    $lastAckSeq = 0
     $inputDirty = $false
     $controllers = 0
 
@@ -358,27 +429,38 @@ while ($true) {
             Write-Host ""
           } elseif ($msg.event -eq 'host:controller_count') {
             $controllers = [int]$msg.payload.count
-            $inFlightFrames = 0
+            $lastAckSeq = $frameSeq
             $lastSig = ''
           } elseif ($msg.event -eq 'host:frame_ack') {
-            $inFlightFrames = 0
+            if ($null -ne $msg.payload.seq) {
+              $ackSeq = [int]$msg.payload.seq
+              if ($ackSeq -gt $lastAckSeq) { $lastAckSeq = $ackSeq }
+            } else {
+              $lastAckSeq = $frameSeq
+            }
           } elseif ($msg.event -eq 'client:input') {
             $ev = $msg.payload
             if ($ev.type -eq 'mousemove' -and $ev.relative -eq $true) {
               $pendingRelDx += [int]$ev.dx
               $pendingRelDy += [int]$ev.dy
               $inputDirty = $true
+              $motionUntil = ([DateTime]::UtcNow).AddMilliseconds(280)
             } else {
               if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
                 $pos = [System.Windows.Forms.Cursor]::Position
-                $nx = [Math]::Max(0, [Math]::Min($screenW - 1, $pos.X + $pendingRelDx))
-                $ny = [Math]::Max(0, [Math]::Min($screenH - 1, $pos.Y + $pendingRelDy))
+                $nx = [Math]::Max($bounds.X, [Math]::Min($bounds.X + $screenW - 1, $pos.X + $pendingRelDx))
+                $ny = [Math]::Max($bounds.Y, [Math]::Min($bounds.Y + $screenH - 1, $pos.Y + $pendingRelDy))
                 [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
                 $pendingRelDx = 0
                 $pendingRelDy = 0
               }
               Handle-RemoteInput $ev
               $inputDirty = $true
+              if ($ev.type -ne 'quality') {
+                $motionUntil = ([DateTime]::UtcNow).AddMilliseconds(280)
+              } else {
+                $lastSig = ''
+              }
             }
           }
         }
@@ -387,36 +469,32 @@ while ($true) {
 
       if ($pendingRelDx -ne 0 -or $pendingRelDy -ne 0) {
         $pos = [System.Windows.Forms.Cursor]::Position
-        $nx = [Math]::Max(0, [Math]::Min($screenW - 1, $pos.X + $pendingRelDx))
-        $ny = [Math]::Max(0, [Math]::Min($screenH - 1, $pos.Y + $pendingRelDy))
+        $nx = [Math]::Max($bounds.X, [Math]::Min($bounds.X + $screenW - 1, $pos.X + $pendingRelDx))
+        $ny = [Math]::Max($bounds.Y, [Math]::Min($bounds.Y + $screenH - 1, $pos.Y + $pendingRelDy))
         [DeskBridgeWin32]::SetCursorPos($nx, $ny) | Out-Null
       }
 
       $now = [DateTime]::UtcNow
-      $canSendByAck = ($inFlightFrames -eq 0) -or (($now - $lastFrameSentAt).TotalMilliseconds -ge 1200)
+      $inFlight = $frameSeq - $lastAckSeq
+      $canSendByAck = ($inFlight -lt 2) -or (($now - $lastFrameSentAt).TotalMilliseconds -ge 450)
       $elapsedMs = ($now - $lastFrame).TotalMilliseconds
-      $minInterval = if ($inputDirty) { 45 } else { $FrameIntervalMs }
+      $inMotion = ($now -lt $motionUntil)
+      $minInterval = if ($inputDirty -or $inMotion) { 30 } else { $FrameIntervalMs }
 
       if ($controllers -gt 0 -and $canSendByAck -and $elapsedMs -ge $minInterval) {
-        $cap = Capture-ScreenWithSig
-        $changed = ($cap.sig -ne $lastSig) -or $inputDirty -or ($elapsedMs -ge 1200)
+        $useFast = $inMotion
+        $cap = Capture-ScreenBinary $useFast
+        $needSettle = ($lastWasMotion -and (-not $useFast))
+        $changed = ($cap.sig -ne $lastSig) -or $inputDirty -or $needSettle -or ($elapsedMs -ge 1000)
         if ($changed) {
           $frameSeq++
           $activeWin = [DeskBridgeWin32]::GetActiveWindowTitle()
-          Send-WsJson $ws @{
-            event = 'host:frame'
-            payload = @{
-              hostId = $HostId
-              frame = $cap.data
-              seq = $frameSeq
-              activeWindow = $activeWin
-              timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-            }
-          }
+          $ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+          Send-WsBinaryFrame $ws $HostId $frameSeq $activeWin $ts $capMs
           $lastSig = $cap.sig
+          $lastWasMotion = $useFast
           $lastFrame = $now
           $lastFrameSentAt = $now
-          $inFlightFrames = 1
           $inputDirty = $false
         }
       }

@@ -25,6 +25,17 @@ interface HostConnection {
   ws: WebSocket | null;
   controllers: Set<WebSocket>;
   latestFrame?: string;
+  latestJpeg?: Buffer;
+}
+
+function getLatestFrameDataUrl(entry?: HostConnection): string | undefined {
+  if (!entry) return undefined;
+  if (entry.latestFrame) return entry.latestFrame;
+  if (entry.latestJpeg && entry.latestJpeg.length > 0) {
+    entry.latestFrame = `data:image/jpeg;base64,${entry.latestJpeg.toString('base64')}`;
+    return entry.latestFrame;
+  }
+  return undefined;
 }
 
 const hosts = new Map<string, HostConnection>();
@@ -164,7 +175,7 @@ async function startServer() {
         ...match.profile,
         connectedControllers: match.controllers.size,
       },
-      latestFrame: match.latestFrame || null,
+      latestFrame: getLatestFrameDataUrl(match) || null,
     });
   });
 
@@ -265,7 +276,11 @@ async function startServer() {
       }
 
       const activeEntry = hostId ? hosts.get(hostId) : undefined;
-      const frame = screenshotBase64 || activeEntry?.latestFrame;
+      const clientShot =
+        typeof screenshotBase64 === 'string' && screenshotBase64.startsWith('data:image/')
+          ? screenshotBase64
+          : undefined;
+      const frame = clientShot || getLatestFrameDataUrl(activeEntry);
 
       const result = await processAssistantCommand({
         prompt: prompt.trim(),
@@ -307,7 +322,11 @@ async function startServer() {
       }
 
       const activeEntry = hostId ? hosts.get(hostId) : undefined;
-      const frame = screenshotBase64 || activeEntry?.latestFrame;
+      const clientShot =
+        typeof screenshotBase64 === 'string' && screenshotBase64.startsWith('data:image/')
+          ? screenshotBase64
+          : undefined;
+      const frame = clientShot || getLatestFrameDataUrl(activeEntry);
 
       const result = await processAssistantCommand({
         prompt: transcript || undefined,
@@ -358,7 +377,43 @@ async function startServer() {
     const envAppUrl = process.env.APP_URL && process.env.APP_URL !== 'MY_APP_URL' ? process.env.APP_URL : '';
     const baseUrl = (envAppUrl || `${proto}://${hostHeader}`).replace(/\/$/, '');
 
-    ws.on('message', (raw) => {
+    ws.on('message', (raw, isBinary) => {
+      if (isBinary) {
+        const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
+        if (buf.length <= 4 || buf[0] !== 0x44 || buf[1] !== 0x01) {
+          return;
+        }
+        const headerLen = buf.readUInt16BE(2);
+        if (buf.length <= 4 + headerLen) return;
+        let meta: {
+          hostId?: string;
+          seq?: number;
+          activeWindow?: string;
+          timestamp?: number;
+        };
+        try {
+          meta = JSON.parse(buf.subarray(4, 4 + headerLen).toString('utf8'));
+        } catch {
+          return;
+        }
+        const hostId = String(meta.hostId || ownedHostId || '');
+        const entry = hosts.get(hostId);
+        if (!entry) return;
+        entry.latestJpeg = Buffer.from(buf.subarray(4 + headerLen));
+        entry.latestFrame = undefined;
+        entry.profile.lastSeen = Date.now();
+        entry.profile.status = 'online';
+        if (typeof meta.activeWindow === 'string') {
+          entry.profile.activeWindow = meta.activeWindow;
+        }
+        for (const ctrl of entry.controllers) {
+          if (ctrl.readyState === WebSocket.OPEN && ctrl.bufferedAmount < 512 * 1024) {
+            ctrl.send(buf, { binary: true });
+          }
+        }
+        return;
+      }
+
       let msg: { event?: string; payload?: Record<string, unknown> };
       try {
         msg = JSON.parse(String(raw));
@@ -439,6 +494,7 @@ async function startServer() {
         const frame = typeof payload.frame === 'string' ? payload.frame : '';
         if (frame) {
           entry.latestFrame = frame;
+          entry.latestJpeg = undefined;
         }
         entry.profile.lastSeen = Date.now();
         entry.profile.status = 'online';
@@ -505,7 +561,7 @@ async function startServer() {
             ...entry.profile,
             connectedControllers: entry.controllers.size,
           },
-          latestFrame: entry.latestFrame || null,
+          latestFrame: getLatestFrameDataUrl(entry) || null,
         });
         sendJson(entry.ws, 'host:controller_count', { count: entry.controllers.size });
         broadcastFleet();

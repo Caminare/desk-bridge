@@ -31,9 +31,9 @@ import { AIAssistantPanel } from './AIAssistantPanel';
 type StreamQualityPreset = 'sd' | 'hd' | 'ultra';
 
 const QUALITY_PRESETS: Record<StreamQualityPreset, { label: string; maxWidth: number; jpegQuality: number }> = {
-  sd: { label: 'SD', maxWidth: 1024, jpegQuality: 55 },
-  hd: { label: 'HD', maxWidth: 1280, jpegQuality: 68 },
-  ultra: { label: 'Ultra', maxWidth: 1600, jpegQuality: 80 },
+  sd: { label: 'SD', maxWidth: 854, jpegQuality: 52 },
+  hd: { label: 'HD', maxWidth: 1152, jpegQuality: 62 },
+  ultra: { label: 'Ultra', maxWidth: 1600, jpegQuality: 78 },
 };
 
 interface TouchControlDeckProps {
@@ -65,24 +65,50 @@ export function TouchControlDeck({
   const [showMobileAI, setShowMobileAI] = useState(false);
   const [textBuffer, setTextBuffer] = useState('');
   const [liveTyping, setLiveTyping] = useState(true);
-  const [sensitivity, setSensitivity] = useState(3.0);
+  const [sensitivity, setSensitivity] = useState(3.2);
   const [tapFeedback, setTapFeedback] = useState<{ x: number; y: number; id: number } | null>(null);
 
   const streamImgRef = useRef<HTMLImageElement | null>(null);
   const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const enteredNativeFsRef = useRef(false);
-  const activePointersRef = useRef<Set<number>>(new Set());
+  const showKeyboardRef = useRef(false);
+  showKeyboardRef.current = showKeyboard;
+  const keyboardFocusLockRef = useRef(false);
+
+  const pointersMapRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const twoFingerTapRef = useRef<boolean>(false);
+  const twoFingerMovedRef = useRef<boolean>(false);
+  const twoFingerMidRef = useRef<{ x: number; y: number } | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number; startX: number; startY: number; startTime: number } | null>(null);
   const lastTapTimeRef = useRef<number>(0);
 
-  // Coalesce high-frequency pointermove events (~120Hz on mobile/iPad) into 22ms batches (~45Hz)
+  const directPointerRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    nx: number;
+    ny: number;
+    isScrolling: boolean;
+    scrollCursorMoved: boolean;
+  } | null>(null);
+
+  // Coalesce high-frequency pointermove events (~120Hz on mobile/iPad) into 16ms batches (~60Hz)
   const pendingMoveRef = useRef<{ dx: number; dy: number; hostId: string | null }>({
     dx: 0,
     dy: 0,
     hostId: null,
   });
   const moveFlushTimerRef = useRef<number | null>(null);
+
+  // Coalesce high-frequency scroll gestures into 24ms wheel batches
+  const pendingScrollRef = useRef<{ dx: number; dy: number; hostId: string | null }>({
+    dx: 0,
+    dy: 0,
+    hostId: null,
+  });
+  const scrollFlushTimerRef = useRef<number | null>(null);
 
   const flushPendingMove = useCallback(() => {
     if (moveFlushTimerRef.current !== null) {
@@ -97,10 +123,42 @@ export function TouchControlDeck({
     }
   }, [onSendInput]);
 
+  const flushPendingScroll = useCallback(() => {
+    if (scrollFlushTimerRef.current !== null) {
+      window.clearTimeout(scrollFlushTimerRef.current);
+      scrollFlushTimerRef.current = null;
+    }
+    const { dx, dy, hostId } = pendingScrollRef.current;
+    if ((Math.abs(dx) >= 0.15 || Math.abs(dy) >= 0.15) && hostId) {
+      pendingScrollRef.current.dx = 0;
+      pendingScrollRef.current.dy = 0;
+      onSendInput(
+        { type: 'scroll', deltaX: Number(dx.toFixed(2)), deltaY: Number(dy.toFixed(2)) },
+        hostId,
+        'touch',
+      );
+    }
+  }, [onSendInput]);
+
+  const queueScroll = useCallback(
+    (deltaX: number, deltaY: number, hostId: string) => {
+      pendingScrollRef.current.hostId = hostId;
+      pendingScrollRef.current.dx += deltaX;
+      pendingScrollRef.current.dy += deltaY;
+      if (scrollFlushTimerRef.current === null) {
+        scrollFlushTimerRef.current = window.setTimeout(flushPendingScroll, 24);
+      }
+    },
+    [flushPendingScroll],
+  );
+
   useEffect(() => {
     return () => {
       if (moveFlushTimerRef.current !== null) {
         window.clearTimeout(moveFlushTimerRef.current);
+      }
+      if (scrollFlushTimerRef.current !== null) {
+        window.clearTimeout(scrollFlushTimerRef.current);
       }
     };
   }, []);
@@ -121,6 +179,18 @@ export function TouchControlDeck({
       const fsEl = document.fullscreenElement || docAny.webkitFullscreenElement;
       if (!fsEl && enteredNativeFsRef.current) {
         enteredNativeFsRef.current = false;
+        const activeTag = document.activeElement?.tagName;
+        if (
+          showKeyboardRef.current ||
+          keyboardFocusLockRef.current ||
+          activeTag === 'INPUT' ||
+          activeTag === 'TEXTAREA'
+        ) {
+          if (showKeyboardRef.current) {
+            window.setTimeout(() => keyboardInputRef.current?.focus(), 40);
+          }
+          return;
+        }
         setIsFullscreen(false);
         setHudHidden(false);
       }
@@ -215,6 +285,10 @@ export function TouchControlDeck({
 
   const exitFullscreen = async () => {
     enteredNativeFsRef.current = false;
+    keyboardFocusLockRef.current = false;
+    showKeyboardRef.current = false;
+    setShowKeyboard(false);
+    keyboardInputRef.current?.blur();
     setIsFullscreen(false);
     setHudHidden(false);
     try {
@@ -279,9 +353,9 @@ export function TouchControlDeck({
     );
   }
 
-  const handleDirectScreenClick = (e: React.PointerEvent<HTMLDivElement>) => {
+  const computeNormalizedCoords = (clientX: number, clientY: number, fallbackEl: HTMLElement) => {
     const img = streamImgRef.current;
-    const rect = (img || e.currentTarget).getBoundingClientRect();
+    const rect = (img || fallbackEl).getBoundingClientRect();
     let left = rect.left;
     let top = rect.top;
     let width = rect.width;
@@ -299,8 +373,59 @@ export function TouchControlDeck({
       }
     }
 
-    const nx = Math.max(0, Math.min(1, (e.clientX - left) / width));
-    const ny = Math.max(0, Math.min(1, (e.clientY - top) / height));
+    const nx = Math.max(0, Math.min(1, (clientX - left) / width));
+    const ny = Math.max(0, Math.min(1, (clientY - top) / height));
+    return { nx, ny };
+  };
+
+  const handleDirectPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === 'mouse' && e.button === 2) {
+      const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
+      onSendInput({ type: 'click', button: 'right', x: nx, y: ny }, activeHost.hostId, 'touch');
+      return;
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
+    directPointerRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      nx,
+      ny,
+      isScrolling: false,
+      scrollCursorMoved: false,
+    };
+  };
+
+  const handleDirectPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const dp = directPointerRef.current;
+    if (!dp || dp.pointerId !== e.pointerId) return;
+    const totalDist = Math.hypot(e.clientX - dp.startX, e.clientY - dp.startY);
+    if (!dp.isScrolling && totalDist > 10) {
+      dp.isScrolling = true;
+      if (!dp.scrollCursorMoved) {
+        dp.scrollCursorMoved = true;
+        onSendInput({ type: 'mousemove', x: dp.nx, y: dp.ny, relative: false }, activeHost.hostId, 'touch');
+      }
+    }
+    if (dp.isScrolling) {
+      const dy = e.clientY - dp.lastY;
+      const dx = e.clientX - dp.lastX;
+      dp.lastX = e.clientX;
+      dp.lastY = e.clientY;
+      queueScroll(-dx / 18, -dy / 12, activeHost.hostId);
+    }
+  };
+
+  const handleDirectPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const dp = directPointerRef.current;
+    if (!dp || dp.pointerId !== e.pointerId) return;
+    directPointerRef.current = null;
+    flushPendingScroll();
+
+    if (dp.isScrolling) return;
 
     const now = Date.now();
     const isDouble = now - lastTapTimeRef.current < 320;
@@ -312,31 +437,71 @@ export function TouchControlDeck({
     setTapFeedback({ x: fbX, y: fbY, id: now });
     window.setTimeout(() => setTapFeedback(null), 350);
 
-    onSendInput({ type: 'click', button: 'left', double: isDouble, x: nx, y: ny }, activeHost.hostId, 'touch');
+    onSendInput({ type: 'click', button: 'left', double: isDouble, x: dp.nx, y: dp.ny }, activeHost.hostId, 'touch');
+  };
+
+  const handleDirectPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (directPointerRef.current?.pointerId === e.pointerId) {
+      directPointerRef.current = null;
+      flushPendingScroll();
+    }
   };
 
   const handleTrackpadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    activePointersRef.current.add(e.pointerId);
-    twoFingerTapRef.current = activePointersRef.current.size >= 2;
-    lastPointerRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      startX: e.clientX,
-      startY: e.clientY,
-      startTime: Date.now(),
-    };
+    pointersMapRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (pointersMapRef.current.size >= 2) {
+      twoFingerTapRef.current = true;
+      twoFingerMovedRef.current = false;
+      const pts = Array.from(pointersMapRef.current.values());
+      twoFingerMidRef.current = {
+        x: (pts[0].x + pts[1].x) / 2,
+        y: (pts[0].y + pts[1].y) / 2,
+      };
+    } else {
+      twoFingerTapRef.current = false;
+      twoFingerMovedRef.current = false;
+      twoFingerMidRef.current = null;
+      lastPointerRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        startX: e.clientX,
+        startY: e.clientY,
+        startTime: Date.now(),
+      };
+    }
   };
 
   const handleTrackpadPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!lastPointerRef.current || activePointersRef.current.size >= 2) return;
+    if (pointersMapRef.current.has(e.pointerId)) {
+      pointersMapRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    if (pointersMapRef.current.size >= 2) {
+      const pts = Array.from(pointersMapRef.current.values());
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      if (twoFingerMidRef.current) {
+        const dx = midX - twoFingerMidRef.current.x;
+        const dy = midY - twoFingerMidRef.current.y;
+        if (Math.hypot(dx, dy) > 2) {
+          twoFingerMovedRef.current = true;
+        }
+        queueScroll(-dx / 18, -dy / 10, activeHost.hostId);
+      }
+      twoFingerMidRef.current = { x: midX, y: midY };
+      return;
+    }
+
+    if (!lastPointerRef.current) return;
     const rawDx = e.clientX - lastPointerRef.current.x;
     const rawDy = e.clientY - lastPointerRef.current.y;
     lastPointerRef.current.x = e.clientX;
     lastPointerRef.current.y = e.clientY;
 
     const speed = Math.hypot(rawDx, rawDy);
-    const accel = speed > 12 ? 1.7 : speed > 5 ? 1.25 : 1.0;
+    const accel = speed > 12 ? 1.75 : speed > 5 ? 1.25 : 1.0;
     const dx = Math.round(rawDx * sensitivity * accel);
     const dy = Math.round(rawDy * sensitivity * accel);
 
@@ -351,31 +516,58 @@ export function TouchControlDeck({
   };
 
   const handleTrackpadPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    activePointersRef.current.delete(e.pointerId);
+    pointersMapRef.current.delete(e.pointerId);
     flushPendingMove();
+    flushPendingScroll();
 
-    if (!lastPointerRef.current) return;
-    const dist = Math.hypot(
-      e.clientX - lastPointerRef.current.startX,
-      e.clientY - lastPointerRef.current.startY,
-    );
-    const elapsed = Date.now() - lastPointerRef.current.startTime;
+    if (pointersMapRef.current.size === 1) {
+      const remaining = Array.from(pointersMapRef.current.values())[0];
+      twoFingerMidRef.current = null;
+      lastPointerRef.current = {
+        x: remaining.x,
+        y: remaining.y,
+        startX: remaining.x,
+        startY: remaining.y,
+        startTime: Date.now(),
+      };
+      return;
+    }
 
-    if (activePointersRef.current.size === 0) {
+    if (pointersMapRef.current.size === 0) {
+      twoFingerMidRef.current = null;
+      const lp = lastPointerRef.current;
       lastPointerRef.current = null;
-      if (twoFingerTapRef.current && dist < 14 && elapsed < 320) {
+
+      if (twoFingerTapRef.current) {
+        const wasTap = !twoFingerMovedRef.current;
         twoFingerTapRef.current = false;
-        onSendInput({ type: 'click', button: 'right' }, activeHost.hostId, 'touch');
+        twoFingerMovedRef.current = false;
+        if (wasTap) {
+          onSendInput({ type: 'click', button: 'right' }, activeHost.hostId, 'touch');
+        }
         return;
       }
-      twoFingerTapRef.current = false;
 
-      if (dist < 10 && elapsed < 260) {
-        const now = Date.now();
-        const isDouble = now - lastTapTimeRef.current < 300;
-        lastTapTimeRef.current = now;
-        onSendInput({ type: 'click', button: 'left', double: isDouble }, activeHost.hostId, 'touch');
+      if (lp) {
+        const dist = Math.hypot(e.clientX - lp.startX, e.clientY - lp.startY);
+        const elapsed = Date.now() - lp.startTime;
+        if (dist < 10 && elapsed < 260) {
+          const now = Date.now();
+          const isDouble = now - lastTapTimeRef.current < 300;
+          lastTapTimeRef.current = now;
+          onSendInput({ type: 'click', button: 'left', double: isDouble }, activeHost.hostId, 'touch');
+        }
       }
+    }
+  };
+
+  const handleViewportWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (zoomed) return;
+    const scale = e.deltaMode === 1 ? 1 : 1 / 40;
+    const dy = e.deltaY * scale;
+    const dx = e.deltaX * scale;
+    if (dx !== 0 || dy !== 0) {
+      queueScroll(dx, dy, activeHost.hostId);
     }
   };
 
@@ -428,6 +620,8 @@ export function TouchControlDeck({
 
   const toggleKeyboardDrawer = () => {
     const next = !showKeyboard;
+    showKeyboardRef.current = next;
+    keyboardFocusLockRef.current = next;
     setShowKeyboard(next);
     if (next) {
       keyboardInputRef.current?.focus();
@@ -440,17 +634,19 @@ export function TouchControlDeck({
     const useGestureTrackpad = fullscreen && inputMode === 'trackpad' && !showFullscreenTrackpad;
     return (
       <div
+        onWheel={handleViewportWheel}
         className={`relative bg-black select-none ${
           zoomed ? 'overflow-auto' : 'overflow-hidden'
         } ${fullscreen ? 'w-full h-full flex items-center justify-center' : 'bg-slate-950'} ${
-          useGestureTrackpad ? 'touch-none' : 'cursor-crosshair'
-        }`}
+          !zoomed ? 'touch-none' : ''
+        } ${useGestureTrackpad ? '' : 'cursor-crosshair'}`}
       >
         <div
-          onPointerDown={useGestureTrackpad ? handleTrackpadPointerDown : handleDirectScreenClick}
-          onPointerMove={useGestureTrackpad ? handleTrackpadPointerMove : undefined}
-          onPointerUp={useGestureTrackpad ? handleTrackpadPointerUp : undefined}
-          onPointerCancel={useGestureTrackpad ? handleTrackpadPointerUp : undefined}
+          onPointerDown={useGestureTrackpad ? handleTrackpadPointerDown : handleDirectPointerDown}
+          onPointerMove={useGestureTrackpad ? handleTrackpadPointerMove : handleDirectPointerMove}
+          onPointerUp={useGestureTrackpad ? handleTrackpadPointerUp : handleDirectPointerUp}
+          onPointerCancel={useGestureTrackpad ? handleTrackpadPointerUp : handleDirectPointerCancel}
+          onContextMenu={(e) => e.preventDefault()}
           className={`relative flex items-center justify-center transition-transform duration-200 ${
             fullscreen ? 'w-full h-full' : 'aspect-video w-full'
           } ${zoomed ? 'scale-150 origin-center' : 'scale-100'}`}
@@ -505,6 +701,16 @@ export function TouchControlDeck({
           value={textBuffer}
           onChange={(e) => handleTextChange(e.target.value)}
           onKeyDown={handleKeyboardInputKeyDown}
+          onFocus={() => {
+            keyboardFocusLockRef.current = true;
+          }}
+          onBlur={() => {
+            window.setTimeout(() => {
+              if (!showKeyboardRef.current) {
+                keyboardFocusLockRef.current = false;
+              }
+            }, 350);
+          }}
           autoCapitalize="none"
           autoCorrect="off"
           autoComplete="off"
@@ -529,6 +735,8 @@ export function TouchControlDeck({
           <button
             type="button"
             onClick={() => {
+              showKeyboardRef.current = false;
+              keyboardFocusLockRef.current = false;
               setShowKeyboard(false);
               keyboardInputRef.current?.blur();
             }}
@@ -639,7 +847,7 @@ export function TouchControlDeck({
       }
     >
       <div className="flex items-center justify-between px-1 text-xs text-slate-400">
-        <span>Drag to move · Tap = left click · 2-finger tap = right click</span>
+        <span>Drag = move · 2-finger drag = scroll · Tap = click</span>
         <label className="inline-flex items-center gap-2 shrink-0 ml-2">
           <span>Speed</span>
           <input
@@ -671,7 +879,7 @@ export function TouchControlDeck({
         <div className="col-span-2 flex flex-col gap-2">
           <button
             type="button"
-            onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -3 }, activeHost.hostId, 'touch')}
+            onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -5 }, activeHost.hostId, 'touch')}
             className={`flex-1 min-h-[40px] rounded-xl border flex items-center justify-center active:scale-[0.98] ${
               fullscreenOverlay
                 ? 'bg-slate-900 border-slate-800 text-slate-200'
@@ -683,7 +891,7 @@ export function TouchControlDeck({
           </button>
           <button
             type="button"
-            onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 3 }, activeHost.hostId, 'touch')}
+            onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 5 }, activeHost.hostId, 'touch')}
             className={`flex-1 min-h-[40px] rounded-xl border flex items-center justify-center active:scale-[0.98] ${
               fullscreenOverlay
                 ? 'bg-slate-900 border-slate-800 text-slate-200'
@@ -809,7 +1017,7 @@ export function TouchControlDeck({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -3 }, activeHost.hostId, 'touch')}
+                      onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: -5 }, activeHost.hostId, 'touch')}
                       className="min-h-[36px] min-w-[34px] rounded-xl bg-slate-800/90 text-slate-200 flex items-center justify-center shrink-0"
                       aria-label="Scroll up"
                     >
@@ -817,7 +1025,7 @@ export function TouchControlDeck({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 3 }, activeHost.hostId, 'touch')}
+                      onClick={() => onSendInput({ type: 'scroll', deltaX: 0, deltaY: 5 }, activeHost.hostId, 'touch')}
                       className="min-h-[36px] min-w-[34px] rounded-xl bg-slate-800/90 text-slate-200 flex items-center justify-center shrink-0"
                       aria-label="Scroll down"
                     >

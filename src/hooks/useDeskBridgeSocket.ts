@@ -10,6 +10,8 @@ export function useDeskBridgeSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const activeHostIdRef = useRef<string | null>(null);
+  const blobUrlsByHostRef = useRef<Record<string, string>>({});
+  const hostLastMetaAtRef = useRef<Record<string, { ts: number; win?: string }>>({});
 
   const [wsConnected, setWsConnected] = useState(false);
   const [hosts, setHosts] = useState<HostProfile[]>([]);
@@ -45,13 +47,40 @@ export function useDeskBridgeSocket() {
     return false;
   }, []);
 
+  const applyHostMeta = useCallback((hostId: string, activeWindow?: string, cpuUsage?: number, memoryUsage?: number) => {
+    const now = Date.now();
+    const prevMeta = hostLastMetaAtRef.current[hostId];
+    const winChanged = activeWindow !== undefined && prevMeta?.win !== activeWindow;
+    if (!winChanged && prevMeta && now - prevMeta.ts < 2000) {
+      return;
+    }
+    hostLastMetaAtRef.current[hostId] = { ts: now, win: activeWindow ?? prevMeta?.win };
+    setHosts((prev) =>
+      prev.map((h) =>
+        h.hostId === hostId
+          ? {
+              ...h,
+              status: 'online',
+              lastSeen: now,
+              activeWindow: activeWindow ?? h.activeWindow,
+              cpuUsage: cpuUsage ?? h.cpuUsage,
+              memoryUsage: memoryUsage ?? h.memoryUsage,
+            }
+          : h,
+      ),
+    );
+  }, []);
+
   const connect = useCallback(() => {
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       return;
     }
 
     const ws = new WebSocket(getWsEndpoint());
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
+
+    const textDecoder = new TextDecoder();
 
     ws.onopen = () => {
       setWsConnected(true);
@@ -62,6 +91,50 @@ export function useDeskBridgeSocket() {
     };
 
     ws.onmessage = (evt) => {
+      if (evt.data instanceof ArrayBuffer) {
+        const buf = evt.data;
+        if (buf.byteLength <= 4) return;
+        const view = new DataView(buf);
+        if (view.getUint8(0) !== 0x44 || view.getUint8(1) !== 0x01) return;
+        const headerLen = view.getUint16(2, false);
+        if (buf.byteLength <= 4 + headerLen) return;
+
+        let meta: {
+          hostId?: string;
+          seq?: number;
+          activeWindow?: string;
+          timestamp?: number;
+        };
+        try {
+          meta = JSON.parse(textDecoder.decode(new Uint8Array(buf, 4, headerLen)));
+        } catch {
+          return;
+        }
+        const hostId = meta.hostId;
+        if (!hostId) return;
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              event: 'client:frame_ack',
+              payload: { hostId, seq: meta.seq, timestamp: meta.timestamp },
+            }),
+          );
+        }
+
+        const jpegBlob = new Blob([new Uint8Array(buf, 4 + headerLen)], { type: 'image/jpeg' });
+        const nextUrl = URL.createObjectURL(jpegBlob);
+        const prevUrl = blobUrlsByHostRef.current[hostId];
+        blobUrlsByHostRef.current[hostId] = nextUrl;
+        if (prevUrl) {
+          window.setTimeout(() => URL.revokeObjectURL(prevUrl), 1500);
+        }
+
+        setFramesByHost((prev) => ({ ...prev, [hostId]: nextUrl }));
+        applyHostMeta(hostId, meta.activeWindow);
+        return;
+      }
+
       let msg: { event?: string; payload?: unknown };
       try {
         msg = JSON.parse(String(evt.data));
@@ -99,33 +172,18 @@ export function useDeskBridgeSocket() {
           cpuUsage?: number;
           memoryUsage?: number;
         };
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              event: 'client:frame_ack',
+              payload: { hostId: data.hostId, seq: data.seq, timestamp: data.timestamp },
+            }),
+          );
+        }
         if (data.frame) {
           setFramesByHost((prev) => ({ ...prev, [data.hostId]: data.frame }));
         }
-        window.requestAnimationFrame(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                event: 'client:frame_ack',
-                payload: { hostId: data.hostId, seq: data.seq, timestamp: data.timestamp },
-              }),
-            );
-          }
-        });
-        setHosts((prev) =>
-          prev.map((h) =>
-            h.hostId === data.hostId
-              ? {
-                  ...h,
-                  status: 'online',
-                  lastSeen: Date.now(),
-                  activeWindow: data.activeWindow ?? h.activeWindow,
-                  cpuUsage: data.cpuUsage ?? h.cpuUsage,
-                  memoryUsage: data.memoryUsage ?? h.memoryUsage,
-                }
-              : h,
-          ),
-        );
+        applyHostMeta(data.hostId, data.activeWindow, data.cpuUsage, data.memoryUsage);
       } else if (msg.event === 'host:status' && msg.payload) {
         const data = msg.payload as { hostId: string; status: HostProfile['status'] };
         setHosts((prev) =>
@@ -139,13 +197,15 @@ export function useDeskBridgeSocket() {
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = window.setTimeout(connect, 2500);
     };
-  }, [appendActivity]);
+  }, [appendActivity, applyHostMeta]);
 
   useEffect(() => {
     connect();
+    const urlsMap = blobUrlsByHostRef.current;
     return () => {
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
+      Object.values(urlsMap).forEach((u) => URL.revokeObjectURL(u));
     };
   }, [connect]);
 
