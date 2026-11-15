@@ -44,6 +44,8 @@ export interface AgentFrameStats {
   win?: number;
   /** Capture method: 'fast' (one-call GDI StretchBlt) or 'gdi+' (fallback). */
   cm?: string;
+  /** Frames per second the agent actually sent (last second). */
+  sfps?: number;
 }
 
 export interface FrameHeader {
