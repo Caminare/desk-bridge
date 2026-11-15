@@ -30,6 +30,8 @@ interface AIAssistantPanelProps {
   activeHost: HostProfile | null;
   hosts: HostProfile[];
   activeFrame: string | null;
+  /** Fresh screenshot of the active host (data URL); preferred over `activeFrame`. */
+  getScreenshot?: () => string | undefined;
   onDispatchInput: (input: RemoteInputEvent, targetHostId?: string) => void;
   onSwitchHost: (hostId: string) => void;
   compact?: boolean;
@@ -46,6 +48,7 @@ export function AIAssistantPanel({
   activeHost,
   hosts,
   activeFrame,
+  getScreenshot,
   onDispatchInput,
   onSwitchHost,
   compact = false,
@@ -54,6 +57,10 @@ export function AIAssistantPanel({
   const [geminiReady, setGeminiReady] = useState<boolean | null>(null);
   const [promptInput, setPromptInput] = useState('');
   const [autoExecute, setAutoExecute] = useState(true);
+
+  // The server only accepts data URLs as screenshots; thumbnails are blob: URLs.
+  const currentScreenshot = () =>
+    getScreenshot?.() ?? (activeFrame && activeFrame.startsWith('data:image/') ? activeFrame : undefined);
   const [speakReplies, setSpeakReplies] = useState(false);
   const [includeScreen, setIncludeScreen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
@@ -197,7 +204,7 @@ export function AIAssistantPanel({
           thinkingMode,
           hostId: activeHost?.hostId,
           speakReply: speakReplies,
-          screenshotBase64: includeScreen ? activeFrame || undefined : undefined,
+          screenshotBase64: includeScreen ? currentScreenshot() : undefined,
         }),
       });
       const data = await res.json();
@@ -257,7 +264,7 @@ export function AIAssistantPanel({
               thinkingMode,
               hostId: activeHost?.hostId,
               speakReply: speakReplies,
-              screenshotBase64: includeScreen ? activeFrame || undefined : undefined,
+              screenshotBase64: includeScreen ? currentScreenshot() : undefined,
             }),
           });
           const data = await res.json();
