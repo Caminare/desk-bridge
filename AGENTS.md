@@ -133,5 +133,5 @@ If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`
 - Streaming is still JPEG (tiled). A real video codec (H.264 via WebRTC, or a native encoder in the agent) would cut bandwidth much further for full-screen motion such as video or scrolling.
 - The relay's backlog-skip path (`bufferedAmount`) is not covered by tests, because it needs a deliberately slow socket.
 - There are no UI tests, and the PowerShell agent has no automated runtime tests (no Windows runner).
-- `Win+L` is mapped to `LockWorkStation()`, and `Ctrl+Alt+Del` cannot be injected at all (secure attention sequence).
+- `Win+L` is mapped to `LockWorkStation()`, and `Ctrl+Alt+Del` cannot be injected at all (secure attention sequence). A locked PC can't be unlocked remotely: the PIN box is on the secure desktop (#10). The client confirms every locking input (`isLockingInput` in `src/lib/remoteInput.ts`, checked in `sendRemoteInput`). The agent's opt-in `-KeepAwake` (download option `keepAwake=1`) calls `SetThreadExecutionState` and nudges the idle timer every 50 s while a controller is connected.
 - An agent running unelevated cannot send input to elevated windows (UIPI).

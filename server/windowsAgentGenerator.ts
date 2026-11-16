@@ -5,6 +5,8 @@ export interface WindowsAgentOptions {
   groupLabel: string;
   /** Server enrollment key embedded in the script; lets the agent register. */
   enrollKey: string;
+  /** Keep the PC from sleeping or idle-locking while a phone is connected (opt-in). */
+  keepAwake?: boolean;
 }
 
 export function generatePowerShellHostScript(opts: WindowsAgentOptions): string {
@@ -37,7 +39,11 @@ param(
   [int]$MonitorIndex = -1,
   # Hard cap on frames sent but not yet acknowledged. The actual window is sized in bytes and
   # adapts to queuing delay, so long (high-latency) paths can keep many small frames in flight.
-  [int]$MaxInFlight = 32
+  [int]$MaxInFlight = 32,
+  # While a phone is connected, keep the PC awake and stop idle lock / screen saver. A locked
+  # PC can't be unlocked remotely (the PIN box is on the secure desktop), so this avoids getting
+  # stuck mid-session. Less secure: only enable on PCs in a safe place.
+  [bool]$KeepAwake = $${opts.keepAwake ? 'true' : 'false'}
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,6 +77,24 @@ public static class DeskBridgeWin32 {
 
   [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
   public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+  [DllImport("kernel32.dll")]
+  public static extern uint SetThreadExecutionState(uint esFlags);
+
+  public const uint ES_CONTINUOUS = 0x80000000;
+  public const uint ES_SYSTEM_REQUIRED = 0x00000001;
+  public const uint ES_DISPLAY_REQUIRED = 0x00000002;
+  public const uint MOUSEEVENTF_MOVE = 0x0001;
+
+  /// Ask Windows to keep the system and display on (true) or restore normal idle behaviour.
+  public static void SetKeepAwake(bool on) {
+    SetThreadExecutionState(on ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED) : ES_CONTINUOUS);
+  }
+
+  /// Zero-distance mouse event: resets the idle timer (screen saver / idle lock) without moving the cursor.
+  public static void NudgeIdleTimer() {
+    mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, UIntPtr.Zero);
+  }
 
   public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
   public const uint MOUSEEVENTF_LEFTUP = 0x0004;
@@ -1012,6 +1036,7 @@ while ($true) {
     $sentFps = 0.0
     $rateWindowStart = 0
     $controllers = 0
+    $lastIdleNudge = 0
 
     $recvTask = $null
     $shouldClose = $false
@@ -1059,6 +1084,7 @@ while ($true) {
             Write-Host ""
           } elseif ($msg.event -eq 'host:controller_count') {
             $controllers = [int]$msg.payload.count
+            if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($controllers -gt 0) }
             $inFlight.Clear()
             $inFlightSize.Clear()
             $inFlightBytes = 0
@@ -1208,6 +1234,10 @@ while ($true) {
         $bytesWindow = 0
         $rateWindowStart = $nowMs
       }
+      if ($KeepAwake -and $controllers -gt 0 -and ($nowMs - $lastIdleNudge) -ge 50000) {
+        [DeskBridgeWin32]::NudgeIdleTimer()
+        $lastIdleNudge = $nowMs
+      }
       if ($script:streamer.LastError) {
         Write-Host "Capture error: $($script:streamer.LastError)" -ForegroundColor DarkYellow
         $script:streamer.LastError = ''
@@ -1216,6 +1246,7 @@ while ($true) {
   } catch {
     Write-Host "Connection interrupted: $($_.Exception.Message). Reconnecting in 4s..." -ForegroundColor Red
   } finally {
+    if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($false) }
     $script:streamer.Paused = $true
     $script:sendTask = $null
     $ws.Dispose()

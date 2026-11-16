@@ -126,3 +126,18 @@ test('PowerShell agent: SendInput keyboard and monitor switching are wired up', 
   // SendKeys is gone: it mangled Unicode and could not express arbitrary combos.
   assert.doesNotMatch(ps1, /SendKeys/);
 });
+
+test('PowerShell agent: keep-awake is opt-in and wired to controller count', () => {
+  const off = generatePowerShellHostScript(opts);
+  assert.ok(off.includes('[bool]$KeepAwake = $false'), 'off by default');
+  const on = generatePowerShellHostScript({ ...opts, keepAwake: true });
+  assert.ok(on.includes('[bool]$KeepAwake = $true'));
+  for (const needle of [
+    'public static void SetKeepAwake(bool on)',
+    'public static void NudgeIdleTimer()',
+    'if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($controllers -gt 0) }',
+    'if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($false) }',
+  ]) {
+    assert.ok(on.includes(needle), `missing: ${needle}`);
+  }
+});
