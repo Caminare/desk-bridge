@@ -29,6 +29,7 @@ DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse,
 | `src/components/LiveStreamCanvas.tsx` | Displays a host's composited canvas (rAF-coalesced, no React state per frame). |
 | `src/hooks/useCoalescedPointerInput.ts` | Batches relative mouse moves (16ms) and scroll deltas (24ms) before sending. |
 | `src/lib/streamCoords.ts` | Pointer → normalized remote coordinates, accounting for `object-contain` letterboxing. |
+| `src/lib/viewTransform.ts` | Zoom/pan view model (1–4×, zoom around a focal point, pan clamped to the letterboxed picture, CSS transform). `controlDeck/ZoomControls` and `controlDeck/ZoomMinimap` drive it; the viewport applies it as a `transform`, and click mapping keeps working because it measures the transformed canvas. |
 | `src/lib/virtualDesktop.ts` | Pure model + canvas drawing for the simulated desktop in browser host mode. |
 | `src/types/deskbridge.ts` | Shared types between server and client (`HostProfile`, `RemoteInputEvent`, AI types). |
 | `tests/` | `node:test` suites run through `tsx`: `relay.test.ts` (REST + WebSocket protocol, heartbeat, AI limits), `auth.test.ts`, `agentGenerator.test.ts`, `streamCoords.test.ts`, `virtualDesktop.test.ts`. `helpers.ts` starts an in-process relay on a free port with a temp data dir. |

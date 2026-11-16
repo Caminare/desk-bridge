@@ -12,7 +12,8 @@ Each Windows computer runs a lightweight host agent that exposes its desktop ove
 - **Instant QR & Code Pairing**: Scan the host QR code with your phone camera, upload a QR screenshot, open a pairing link, or enter the 6-character pairing code.
 - **Touch-First Remote Control Deck**:
   - **Trackpad Mode**: Laptop-style thumb trackpad with adjustable pointer speed, tap-to-click, dedicated Left/Right Click buttons, and vertical scroll controls.
-  - **Direct Tap Screen Mode**: Tap or double-tap directly on the streamed Windows desktop with 1.5× zoom support.
+  - **Direct Tap Screen Mode**: Tap or double-tap directly on the streamed Windows desktop.
+  - **Zoom & Pan**: Zoom from 1× to 4× with the − / + buttons (tap the level to reset), by pinching (tap mode), or with Ctrl + mouse wheel. While zoomed, drag with one finger (tap mode) or use the overview minimap (any mode) to move anywhere on the screen. Taps still land exactly where you tap.
   - **Keyboard & Windows Shortcuts**: Send any text, including accents, CJK and emoji, from your mobile keyboard (buffered or live keystrokes). The toolbar has quick shortcuts (`Win+D`, `Alt+Tab`, copy/paste/undo, `Win+E`, `Alt+F4`, Task Manager, `Win+L`). The keyboard drawer adds sticky **Ctrl / Alt / Shift / Win** modifiers, F1–F12 and navigation keys, and a field for sending any combo (e.g. `Ctrl+Shift+T`).
   - **Multi-Monitor**: hosts with several displays show a monitor picker in the Control Deck and the fullscreen toolbar. The agent's `-MonitorIndex` parameter picks the starting display.
 - **Gemini Voice & Text Assistant**:

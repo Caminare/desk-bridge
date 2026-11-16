@@ -1,9 +1,21 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, Bot, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad, ZoomIn, ZoomOut } from 'lucide-react';
+import { Activity, Bot, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad } from 'lucide-react';
 import type { HostProfile, RemoteInputEvent } from '../types/deskbridge';
 import { useCoalescedPointerInput } from '../hooks/useCoalescedPointerInput';
 import { mapToStreamCoords } from '../lib/streamCoords';
+import {
+  DEFAULT_VIEW,
+  centerOn,
+  clampView,
+  contentBounds,
+  panByPixels,
+  stepZoom,
+  zoomAt,
+  type ContentBounds,
+  type ViewState,
+} from '../lib/viewTransform';
+import { ZoomControls } from './controlDeck/ZoomControls';
 import type { FrameStore } from '../lib/frameCompositor';
 import { AIAssistantPanel } from './AIAssistantPanel';
 import { FullscreenHud, type InputMode } from './controlDeck/FullscreenHud';
@@ -38,7 +50,20 @@ export function TouchControlDeck({
 }: TouchControlDeckProps) {
   const [inputMode, setInputMode] = useState<InputMode>('trackpad');
   const [streamQuality, setStreamQuality] = useState<StreamQualityPreset>('hd');
-  const [zoomed, setZoomed] = useState(false);
+  const [view, setView] = useState<ViewState>(DEFAULT_VIEW);
+  const [animateView, setAnimateView] = useState(true);
+  // Latest view, readable synchronously inside gesture handlers; React state is updated at most
+  // once per animation frame while a finger moves.
+  const viewRef = useRef<ViewState>(DEFAULT_VIEW);
+  const viewRafRef = useRef(0);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const directTouchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<{
+    startDist: number;
+    startMid: { x: number; y: number };
+    startView: ViewState;
+  } | null>(null);
+  const panRef = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [hudHidden, setHudHidden] = useState(false);
   const [showFullscreenTrackpad, setShowFullscreenTrackpad] = useState(false);
@@ -233,6 +258,65 @@ export function TouchControlDeck({
     );
   };
 
+  const applyView = useCallback((next: ViewState, animate: boolean) => {
+    viewRef.current = next;
+    if (animate) {
+      if (viewRafRef.current) cancelAnimationFrame(viewRafRef.current);
+      viewRafRef.current = 0;
+      setAnimateView(true);
+      setView(next);
+      return;
+    }
+    if (!viewRafRef.current) {
+      viewRafRef.current = requestAnimationFrame(() => {
+        viewRafRef.current = 0;
+        setAnimateView(false);
+        setView(viewRef.current);
+      });
+    }
+  }, []);
+
+  useEffect(() => () => cancelAnimationFrame(viewRafRef.current), []);
+
+  // Where the (letterboxed) picture sits in the viewport; zoom and pan stay on the picture.
+  const pictureBounds = (): ContentBounds => {
+    const el = viewportRef.current;
+    const c = streamCanvasRef.current;
+    return contentBounds(el?.clientWidth ?? 0, el?.clientHeight ?? 0, c?.width ?? 0, c?.height ?? 0);
+  };
+
+  // Each computer starts unzoomed.
+  const activeHostId = activeHost?.hostId;
+  useEffect(() => {
+    applyView(DEFAULT_VIEW, false);
+  }, [activeHostId, applyView]);
+
+  // Entering/leaving fullscreen changes the viewport shape: keep the view on the picture.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => applyView(clampView(viewRef.current, pictureBounds()), false));
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFullscreen, applyView]);
+
+  const viewportSize = () => {
+    const el = viewportRef.current;
+    return { w: el?.clientWidth ?? 0, h: el?.clientHeight ?? 0, rect: el?.getBoundingClientRect() };
+  };
+
+  const zoomBy = (direction: 1 | -1) =>
+    applyView(zoomAt(viewRef.current, stepZoom(viewRef.current.zoom, direction), 0.5, 0.5, pictureBounds()), true);
+  const resetZoom = () => applyView(DEFAULT_VIEW, true);
+  /** Minimap position (0..1 across the picture) -> center the view there. */
+  const centerViewOn = (mx: number, my: number) => {
+    const b = pictureBounds();
+    applyView(centerOn(viewRef.current, b.left + mx * b.width, b.top + my * b.height, b), false);
+  };
+
+  // Wheel: Ctrl/Cmd + wheel (or a trackpad pinch, which browsers report that way) zooms at the
+  // pointer; a plain wheel scrolls the remote screen. Kept in a ref so the native listener is stable.
+  const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {});
+  const handleViewportWheel = useCallback((e: WheelEvent) => wheelHandlerRef.current(e), []);
+
   if (!activeHost) {
     return (
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 sm:p-12 text-center space-y-5">
@@ -276,13 +360,42 @@ export function TouchControlDeck({
     return mapToStreamCoords(clientX, clientY, rect, natural);
   };
 
+  // Tap-screen mode. One finger: tap = click, drag = scroll the remote screen, or pan the view
+  // while zoomed. Two fingers: pinch to zoom (and move to pan).
+  const pinchMetrics = () => {
+    const pts = Array.from(directTouchesRef.current.values());
+    const [a, b] = pts;
+    return { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  };
+
+  const capturePointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Pointer already gone (or synthetic): nothing to capture.
+    }
+  };
+
   const handleDirectPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === 'mouse' && e.button === 2) {
       const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
       onSendInput({ type: 'click', button: 'right', x: nx, y: ny }, activeHost.hostId, 'touch');
       return;
     }
-    e.currentTarget.setPointerCapture(e.pointerId);
+    capturePointer(e);
+    directTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (directTouchesRef.current.size === 2) {
+      // Second finger: this is a pinch, not a tap or a scroll.
+      directPointerRef.current = null;
+      panRef.current = null;
+      flushScroll();
+      const { dist, mid } = pinchMetrics();
+      pinchRef.current = { startDist: Math.max(dist, 1), startMid: mid, startView: viewRef.current };
+      return;
+    }
+    if (directTouchesRef.current.size > 2) return;
+
     const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
     directPointerRef.current = {
       pointerId: e.pointerId,
@@ -298,9 +411,38 @@ export function TouchControlDeck({
   };
 
   const handleDirectPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (directTouchesRef.current.has(e.pointerId)) {
+      directTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    const pinch = pinchRef.current;
+    if (pinch && directTouchesRef.current.size >= 2) {
+      const { w, h, rect } = viewportSize();
+      if (!rect || w === 0) return;
+      const { dist, mid } = pinchMetrics();
+      const fx = (pinch.startMid.x - rect.left) / rect.width;
+      const fy = (pinch.startMid.y - rect.top) / rect.height;
+      const b = pictureBounds();
+      const zoomed = zoomAt(pinch.startView, pinch.startView.zoom * (dist / pinch.startDist), fx, fy, b);
+      applyView(panByPixels(zoomed, mid.x - pinch.startMid.x, mid.y - pinch.startMid.y, w, h, b), false);
+      return;
+    }
+
     const dp = directPointerRef.current;
     if (!dp || dp.pointerId !== e.pointerId) return;
     const totalDist = Math.hypot(e.clientX - dp.startX, e.clientY - dp.startY);
+
+    // Zoomed in: dragging moves around the screen instead of scrolling the remote PC.
+    if (viewRef.current.zoom > 1 && (panRef.current || totalDist > 8)) {
+      const pan = panRef.current ?? { pointerId: e.pointerId, lastX: dp.lastX, lastY: dp.lastY };
+      const { w, h } = viewportSize();
+      applyView(panByPixels(viewRef.current, e.clientX - pan.lastX, e.clientY - pan.lastY, w, h, pictureBounds()), false);
+      panRef.current = { pointerId: e.pointerId, lastX: e.clientX, lastY: e.clientY };
+      dp.lastX = e.clientX;
+      dp.lastY = e.clientY;
+      return;
+    }
+
     if (!dp.isScrolling && totalDist > 10) {
       dp.isScrolling = true;
       if (!dp.scrollCursorMoved) {
@@ -317,13 +459,28 @@ export function TouchControlDeck({
     }
   };
 
+  const endDirectPointer = (pointerId: number) => {
+    directTouchesRef.current.delete(pointerId);
+    if (pinchRef.current && directTouchesRef.current.size < 2) {
+      pinchRef.current = null;
+      // The finger left on screen must not turn into a tap or a scroll.
+      directPointerRef.current = null;
+      panRef.current = null;
+      return true;
+    }
+    return false;
+  };
+
   const handleDirectPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (endDirectPointer(e.pointerId)) return;
     const dp = directPointerRef.current;
     if (!dp || dp.pointerId !== e.pointerId) return;
     directPointerRef.current = null;
+    const wasPanning = panRef.current !== null;
+    panRef.current = null;
     flushScroll();
 
-    if (dp.isScrolling) return;
+    if (dp.isScrolling || wasPanning) return;
 
     const now = Date.now();
     const isDouble = now - lastTapTimeRef.current < 320;
@@ -339,14 +496,16 @@ export function TouchControlDeck({
   };
 
   const handleDirectPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    endDirectPointer(e.pointerId);
     if (directPointerRef.current?.pointerId === e.pointerId) {
       directPointerRef.current = null;
+      panRef.current = null;
       flushScroll();
     }
   };
 
   const handleTrackpadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
+    capturePointer(e);
     pointersMapRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (pointersMapRef.current.size >= 2) {
@@ -452,8 +611,17 @@ export function TouchControlDeck({
     }
   };
 
-  const handleViewportWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    if (zoomed) return;
+  wheelHandlerRef.current = (e: WheelEvent) => {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const { rect } = viewportSize();
+      if (!rect || rect.width === 0) return;
+      const factor = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0025));
+      const fx = (e.clientX - rect.left) / rect.width;
+      const fy = (e.clientY - rect.top) / rect.height;
+      applyView(zoomAt(viewRef.current, viewRef.current.zoom * factor, fx, fy, pictureBounds()), false);
+      return;
+    }
     const scale = e.deltaMode === 1 ? 1 : 1 / 40;
     const dy = e.deltaY * scale;
     const dx = e.deltaX * scale;
@@ -574,10 +742,14 @@ export function TouchControlDeck({
         frameStore={frameStore}
         fullscreen={fullscreen}
         showStats={showStats}
-        zoomed={zoomed}
+        view={view}
+        bounds={pictureBounds()}
+        animateView={animateView}
         crosshair={!useGestureTrackpad}
         pointerHandlers={useGestureTrackpad ? trackpadHandlers : directHandlers}
         onWheel={handleViewportWheel}
+        onMinimapCenter={centerViewOn}
+        viewportRef={viewportRef}
         canvasRef={streamCanvasRef}
         tapFeedback={tapFeedback}
       />
@@ -653,7 +825,7 @@ export function TouchControlDeck({
             inputMode={inputMode}
             showTrackpad={showFullscreenTrackpad}
             streamQuality={streamQuality}
-            zoomed={zoomed}
+            zoom={view.zoom}
             keyboardOpen={showKeyboard}
             trackpadPanel={renderTrackpadPanel(true)}
             onSelectHost={onSelectHost}
@@ -663,7 +835,9 @@ export function TouchControlDeck({
             onScroll={sendScroll}
             onQualityChange={handleQualityChange}
             onSelectMonitor={selectMonitor}
-            onToggleZoom={() => setZoomed((z) => !z)}
+            onZoomIn={() => zoomBy(1)}
+            onZoomOut={() => zoomBy(-1)}
+            onResetZoom={resetZoom}
             statsOpen={showStats}
             onToggleStats={() => setShowStats((v) => !v)}
             onToggleKeyboard={toggleKeyboardDrawer}
@@ -744,14 +918,13 @@ export function TouchControlDeck({
                   ))}
                 </select>
 
-                <button
-                  type="button"
-                  onClick={() => setZoomed((z) => !z)}
-                  className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
-                  aria-label={zoomed ? 'Reset zoom' : 'Zoom screen'}
-                >
-                  {zoomed ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
-                </button>
+                <ZoomControls
+                  zoom={view.zoom}
+                  onZoomIn={() => zoomBy(1)}
+                  onZoomOut={() => zoomBy(-1)}
+                  onReset={resetZoom}
+                  variant="toolbar"
+                />
 
                 <button
                   type="button"

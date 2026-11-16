@@ -10,11 +10,10 @@ import {
   Minimize2,
   MousePointerClick,
   Touchpad,
-  ZoomIn,
-  ZoomOut,
 } from 'lucide-react';
 import type { HostProfile } from '../../types/deskbridge';
 import { MonitorPicker } from './MonitorPicker';
+import { ZoomControls } from './ZoomControls';
 import { QUALITY_OPTIONS, type StreamQualityPreset } from './qualityPresets';
 
 export type InputMode = 'trackpad' | 'direct';
@@ -26,7 +25,7 @@ interface FullscreenHudProps {
   inputMode: InputMode;
   showTrackpad: boolean;
   streamQuality: StreamQualityPreset;
-  zoomed: boolean;
+  zoom: number;
   keyboardOpen: boolean;
   /** Rendered above the toolbar when the trackpad panel is toggled on. */
   trackpadPanel: React.ReactNode;
@@ -37,7 +36,9 @@ interface FullscreenHudProps {
   onScroll: (deltaY: number) => void;
   onQualityChange: (preset: StreamQualityPreset) => void;
   onSelectMonitor: (index: number) => void;
-  onToggleZoom: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onResetZoom: () => void;
   statsOpen: boolean;
   onToggleStats: () => void;
   onToggleKeyboard: () => void;
@@ -56,7 +57,7 @@ export function FullscreenHud(props: FullscreenHudProps) {
     inputMode,
     showTrackpad,
     streamQuality,
-    zoomed,
+    zoom,
     keyboardOpen,
     trackpadPanel,
   } = props;
@@ -183,14 +184,13 @@ export function FullscreenHud(props: FullscreenHudProps) {
           ))}
         </select>
 
-        <button
-          type="button"
-          onClick={props.onToggleZoom}
-          className={toggleButton(zoomed)}
-          aria-label={zoomed ? 'Reset zoom' : 'Zoom screen'}
-        >
-          {zoomed ? <ZoomOut className="w-4 h-4" /> : <ZoomIn className="w-4 h-4" />}
-        </button>
+        <ZoomControls
+          zoom={zoom}
+          onZoomIn={props.onZoomIn}
+          onZoomOut={props.onZoomOut}
+          onReset={props.onResetZoom}
+          variant="hud"
+        />
 
         <button
           type="button"
