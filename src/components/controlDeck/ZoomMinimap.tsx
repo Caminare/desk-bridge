@@ -13,10 +13,11 @@ interface ZoomMinimapProps {
   aspect: number;
   /** Center the view on a point of the picture (0..1). */
   onCenter: (mx: number, my: number) => void;
+  containerRef?: React.MutableRefObject<HTMLDivElement | null>;
 }
 
 /** Overview of the whole screen with the visible region; drag it to move around while zoomed. */
-export function ZoomMinimap({ store, hostId, view, bounds, aspect, onCenter }: ZoomMinimapProps) {
+export function ZoomMinimap({ store, hostId, view, bounds, aspect, onCenter, containerRef }: ZoomMinimapProps) {
   const visible = 1 / view.zoom;
   const left = (view.x - bounds.left) / bounds.width;
   const top = (view.y - bounds.top) / bounds.height;
@@ -31,7 +32,10 @@ export function ZoomMinimap({ store, hostId, view, bounds, aspect, onCenter }: Z
 
   return (
     <div
-      ref={boxRef}
+      ref={(el) => {
+        boxRef.current = el;
+        if (containerRef) containerRef.current = el;
+      }}
       className="absolute top-2 right-2 z-20 w-32 sm:w-40 rounded-md overflow-hidden border border-white/40 bg-black/80 shadow-lg touch-none select-none cursor-grab"
       style={{ aspectRatio: String(aspect || 16 / 9) }}
       onPointerDown={(e) => {

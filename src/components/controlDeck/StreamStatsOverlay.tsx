@@ -4,6 +4,9 @@ import type { FrameStore, StreamStats } from '../../lib/frameCompositor';
 interface StreamStatsOverlayProps {
   store: FrameStore;
   hostId: string;
+  /** `overlay`: floating over the stream (fullscreen). `strip`: compact grid below the stream. */
+  variant?: 'overlay' | 'strip';
+  containerRef?: React.Ref<HTMLDivElement>;
 }
 
 function fmt(n: number | undefined, unit = '', digits = 0): string {
@@ -11,7 +14,7 @@ function fmt(n: number | undefined, unit = '', digits = 0): string {
 }
 
 /** Live pipeline numbers: what the phone receives and what the agent reports. */
-export function StreamStatsOverlay({ store, hostId }: StreamStatsOverlayProps) {
+export function StreamStatsOverlay({ store, hostId, variant = 'overlay', containerRef }: StreamStatsOverlayProps) {
   const [stats, setStats] = useState<StreamStats>(() => store.get(hostId).stats());
 
   useEffect(() => {
@@ -44,10 +47,30 @@ export function StreamStatsOverlay({ store, hostId }: StreamStatsOverlayProps) {
   if (stats.queued > 1) rows.push(['Queue', String(stats.queued)]);
   if (stats.skipped) rows.push(['Resyncs', String(stats.skipped)]);
 
+  if (variant === 'strip') {
+    return (
+      <div
+        ref={containerRef}
+        className="grid grid-cols-3 sm:grid-cols-4 gap-x-3 gap-y-0.5 px-3 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-mono text-[11px] leading-4 text-slate-700 dark:text-slate-200"
+        aria-live="off"
+        aria-label="Stream stats"
+      >
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-2 min-w-0">
+            <span className="text-slate-500 dark:text-slate-400 truncate">{k}</span>
+            <span className="tabular-nums truncate">{v}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div
+      ref={containerRef}
       className="pointer-events-none absolute top-2 left-2 z-20 rounded-lg bg-black/70 px-2.5 py-1.5 font-mono text-[11px] leading-4 text-slate-100 backdrop-blur-sm"
       aria-live="off"
+      aria-label="Stream stats"
     >
       {rows.map(([k, v]) => (
         <div key={k} className="flex justify-between gap-3">

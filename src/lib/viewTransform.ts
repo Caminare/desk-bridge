@@ -27,6 +27,15 @@ export interface ContentBounds {
 
 export const FULL_BOUNDS: ContentBounds = { left: 0, top: 0, width: 1, height: 1 };
 
+/**
+ * Extra room to pan past the picture's top edge, as a fraction of the viewport height, so the
+ * top of the remote screen (browser tabs, title bars) can be pulled out from under overlays
+ * such as the minimap or the stats panel. Optional `topInset` on the bounds.
+ */
+export interface PanInsets {
+  topInset?: number;
+}
+
 /** Picture bounds for a viewport (boxW x boxH) showing an image (imgW x imgH) with object-contain. */
 export function contentBounds(boxW: number, boxH: number, imgW: number, imgH: number): ContentBounds {
   if (boxW <= 0 || boxH <= 0 || imgW <= 0 || imgH <= 0) return FULL_BOUNDS;
@@ -54,14 +63,16 @@ function clampAxis(offset: number, visible: number, start: number, length: numbe
 }
 
 /** Keeps zoom within limits and the visible region on the picture. */
-export function clampView(v: ViewState, bounds: ContentBounds = FULL_BOUNDS): ViewState {
+export function clampView(v: ViewState, bounds: ContentBounds & PanInsets = FULL_BOUNDS): ViewState {
   const zoom = clamp(Number.isFinite(v.zoom) ? v.zoom : 1, MIN_ZOOM, MAX_ZOOM);
   if (zoom === MIN_ZOOM) return { zoom, x: 0, y: 0 };
   const visible = 1 / zoom;
+  // The inset is in viewport-height units on screen; in content units it shrinks with zoom.
+  const inset = Math.max(0, bounds.topInset ?? 0) / zoom;
   return {
     zoom,
     x: clampAxis(Number.isFinite(v.x) ? v.x : 0, visible, bounds.left, bounds.width),
-    y: clampAxis(Number.isFinite(v.y) ? v.y : 0, visible, bounds.top, bounds.height),
+    y: clampAxis(Number.isFinite(v.y) ? v.y : 0, visible, bounds.top - inset, bounds.height + inset),
   };
 }
 
@@ -69,7 +80,7 @@ export function clampView(v: ViewState, bounds: ContentBounds = FULL_BOUNDS): Vi
  * Changes zoom while keeping the content under the focal point fixed on screen.
  * `fx`/`fy` are the focal point within the viewport (0..1), e.g. the pinch midpoint.
  */
-export function zoomAt(v: ViewState, zoom: number, fx = 0.5, fy = 0.5, bounds: ContentBounds = FULL_BOUNDS): ViewState {
+export function zoomAt(v: ViewState, zoom: number, fx = 0.5, fy = 0.5, bounds: ContentBounds & PanInsets = FULL_BOUNDS): ViewState {
   const contentX = v.x + fx / v.zoom;
   const contentY = v.y + fy / v.zoom;
   const z = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
@@ -83,14 +94,14 @@ export function panByPixels(
   dy: number,
   width: number,
   height: number,
-  bounds: ContentBounds = FULL_BOUNDS,
+  bounds: ContentBounds & PanInsets = FULL_BOUNDS,
 ): ViewState {
   if (width <= 0 || height <= 0) return v;
   return clampView({ ...v, x: v.x - dx / (width * v.zoom), y: v.y - dy / (height * v.zoom) }, bounds);
 }
 
 /** Centers the visible region on a point given in viewport-box coordinates (0..1). */
-export function centerOn(v: ViewState, cx: number, cy: number, bounds: ContentBounds = FULL_BOUNDS): ViewState {
+export function centerOn(v: ViewState, cx: number, cy: number, bounds: ContentBounds & PanInsets = FULL_BOUNDS): ViewState {
   const half = 0.5 / v.zoom;
   return clampView({ ...v, x: cx - half, y: cy - half }, bounds);
 }
