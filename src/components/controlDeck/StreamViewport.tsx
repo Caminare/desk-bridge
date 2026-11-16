@@ -1,21 +1,30 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Monitor } from 'lucide-react';
 import type { HostProfile } from '../../types/deskbridge';
 import type { FrameStore } from '../../lib/frameCompositor';
+import { viewToCss, type ContentBounds, type ViewState } from '../../lib/viewTransform';
 import { LiveStreamCanvas } from '../LiveStreamCanvas';
 import { StreamStatsOverlay } from './StreamStatsOverlay';
+import { ZoomMinimap } from './ZoomMinimap';
 import type { PointerHandlers } from './TrackpadPanel';
 
 interface StreamViewportProps {
   host: HostProfile;
   frameStore: FrameStore;
   fullscreen: boolean;
-  zoomed: boolean;
+  view: ViewState;
+  /** Where the letterboxed picture sits inside the viewport (normalized). */
+  bounds: ContentBounds;
+  /** Animate view changes (button zoom); off while a finger is panning/pinching. */
+  animateView: boolean;
   /** Show a crosshair cursor (direct-tap mode) instead of trackpad gestures. */
   crosshair: boolean;
   showStats: boolean;
   pointerHandlers: PointerHandlers;
-  onWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
+  /** Native, non-passive wheel listener so Ctrl+wheel can zoom without zooming the page. */
+  onWheel: (e: WheelEvent) => void;
+  onMinimapCenter: (cx: number, cy: number) => void;
+  viewportRef: React.MutableRefObject<HTMLDivElement | null>;
   canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
   tapFeedback: { x: number; y: number; id: number } | null;
 }
@@ -24,28 +33,67 @@ export function StreamViewport({
   host,
   frameStore,
   fullscreen,
-  zoomed,
+  view,
+  bounds,
+  animateView,
   crosshair,
   showStats,
   pointerHandlers,
   onWheel,
+  onMinimapCenter,
+  viewportRef,
   canvasRef,
   tapFeedback,
 }: StreamViewportProps) {
+  const [aspect, setAspect] = useState(16 / 9);
+
+  // Track the viewport's aspect ratio (fullscreen follows the window) for the minimap.
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const update = () => {
+      if (el.clientWidth > 0 && el.clientHeight > 0) setAspect(el.clientWidth / el.clientHeight);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [viewportRef, fullscreen]);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [viewportRef, onWheel]);
+
+  const zoomed = view.zoom > 1;
+
   return (
     <div
-      onWheel={onWheel}
-      className={`relative bg-black select-none ${zoomed ? 'overflow-auto' : 'overflow-hidden'} ${
-        fullscreen ? 'w-full h-full flex items-center justify-center' : 'bg-slate-950'
-      } ${!zoomed ? 'touch-none' : ''} ${crosshair ? 'cursor-crosshair' : ''}`}
+      ref={viewportRef}
+      className={`relative bg-black select-none overflow-hidden touch-none ${
+        fullscreen ? 'w-full h-full' : 'aspect-video w-full bg-slate-950'
+      } ${crosshair ? 'cursor-crosshair' : ''}`}
     >
       {showStats && <StreamStatsOverlay store={frameStore} hostId={host.hostId} />}
+      {zoomed && (
+        <ZoomMinimap
+          store={frameStore}
+          hostId={host.hostId}
+          view={view}
+          bounds={bounds}
+          aspect={(aspect * bounds.width) / bounds.height}
+          onCenter={onMinimapCenter}
+        />
+      )}
       <div
         {...pointerHandlers}
         onContextMenu={(e) => e.preventDefault()}
-        className={`relative flex items-center justify-center transition-transform duration-200 ${
-          fullscreen ? 'w-full h-full' : 'aspect-video w-full'
-        } ${zoomed ? 'scale-150 origin-center' : 'scale-100'}`}
+        className={`relative flex items-center justify-center w-full h-full ${
+          animateView ? 'transition-transform duration-150 ease-out' : ''
+        }`}
+        style={{ transform: viewToCss(view), transformOrigin: '0 0' }}
       >
         <LiveStreamCanvas
           store={frameStore}
@@ -71,8 +119,8 @@ export function StreamViewport({
         {tapFeedback && (
           <div
             key={tapFeedback.id}
-            style={{ left: `${tapFeedback.x}%`, top: `${tapFeedback.y}%` }}
-            className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full border-2 border-blue-400 bg-blue-500/20"
+            style={{ left: `${tapFeedback.x}%`, top: `${tapFeedback.y}%`, transform: `translate(-50%, -50%) scale(${1 / view.zoom})` }}
+            className="pointer-events-none absolute w-8 h-8 rounded-full border-2 border-blue-400 bg-blue-500/20"
           />
         )}
       </div>

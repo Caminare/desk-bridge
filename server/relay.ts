@@ -47,6 +47,13 @@ export interface RelayOptions {
   serveClient: 'vite' | 'static' | 'none';
   /** Built client folder for serveClient 'static'. Default <dataDir>/dist. */
   distDir?: string;
+  /**
+   * Behind a reverse proxy (Caddy, nginx) every request comes from 127.0.0.1. When true,
+   * the client IP for login rate limiting is taken from the X-Forwarded-For entry the proxy
+   * appended (the rightmost one). Only enable this when a trusted proxy is in front and the
+   * relay port is not reachable directly.
+   */
+  trustProxy?: boolean;
   /** Owner access token. Default: DESKBRIDGE_ACCESS_TOKEN, else generated and stored. */
   accessToken?: string;
   heartbeatMs?: number;
@@ -212,6 +219,15 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     ws.send(JSON.stringify({ event, payload }));
   }
 
+  function clientIp(req: express.Request): string {
+    if (opts.trustProxy) {
+      const xff = String(req.headers['x-forwarded-for'] || '');
+      const last = xff.split(',').map((p) => p.trim()).filter(Boolean).pop();
+      if (last) return last;
+    }
+    return req.socket.remoteAddress || 'unknown';
+  }
+
   /** Asks the host agent for a keyframe (throttled). Agents without v2 support ignore it. */
   function requestKeyframe(entry: HostConnection) {
     const now = Date.now();
@@ -272,7 +288,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
   });
 
   app.post('/api/auth/login', (req, res) => {
-    const limiterKey = req.socket.remoteAddress || 'unknown';
+    const limiterKey = clientIp(req);
     if (loginLimiter.isBlocked(limiterKey)) {
       res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' });
       return;

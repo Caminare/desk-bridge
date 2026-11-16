@@ -29,10 +29,12 @@ DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse,
 | `src/components/LiveStreamCanvas.tsx` | Displays a host's composited canvas (rAF-coalesced, no React state per frame). |
 | `src/hooks/useCoalescedPointerInput.ts` | Batches relative mouse moves (16ms) and scroll deltas (24ms) before sending. |
 | `src/lib/streamCoords.ts` | Pointer → normalized remote coordinates, accounting for `object-contain` letterboxing. |
+| `src/lib/viewTransform.ts` | Zoom/pan view model (1–4×, zoom around a focal point, pan clamped to the letterboxed picture, CSS transform). `controlDeck/ZoomControls` and `controlDeck/ZoomMinimap` drive it; the viewport applies it as a `transform`, and click mapping keeps working because it measures the transformed canvas. |
 | `src/lib/virtualDesktop.ts` | Pure model + canvas drawing for the simulated desktop in browser host mode. |
 | `src/types/deskbridge.ts` | Shared types between server and client (`HostProfile`, `RemoteInputEvent`, AI types). |
 | `tests/` | `node:test` suites run through `tsx`: `relay.test.ts` (REST + WebSocket protocol, heartbeat, AI limits), `auth.test.ts`, `agentGenerator.test.ts`, `streamCoords.test.ts`, `virtualDesktop.test.ts`. `helpers.ts` starts an in-process relay on a free port with a temp data dir. |
 | `.github/workflows/ci.yml` | CI: `bun install --frozen-lockfile`, lint, test, build. |
+| `deploy/setup-ubuntu.sh`, `deploy/update.sh` | One-command VPS install (Node 22, Caddy HTTPS, systemd service as user `deskbridge`, ufw, swap) and updater. Keep them idempotent; the env file and `/var/lib/deskbridge` state must survive re-runs. |
 
 Runtime state (git-ignored, contains secrets, never commit): `.deskbridge-auth.json`, `.deskbridge-hosts.json`, `.env`.
 
@@ -69,6 +71,8 @@ If you change dependencies, run `bun install` so `bun.lock` stays in sync. CI us
 | `AI_RATE_LIMIT_PER_MIN` | AI requests per session per minute. Default 20. |
 | `GEMINI_MODEL`, `GEMINI_TRANSCRIBE_MODEL` | Override the primary model ids. |
 | `PORT` | Listen port. Default 3000. |
+| `HOST` | Bind address. Default `0.0.0.0`; the VPS setup uses `127.0.0.1` behind Caddy. |
+| `TRUST_PROXY` | `1` to take the login-limiter client IP from the rightmost `X-Forwarded-For` entry. Only enable it behind a trusted proxy with the relay port not publicly reachable. |
 
 ## Wire protocol
 

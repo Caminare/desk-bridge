@@ -30,6 +30,7 @@ export function StreamStatsOverlay({ store, hostId }: StreamStatsOverlayProps) {
   ];
   if (a) {
     rows.push(
+      ['Agent FPS', fmt(a.sfps, '', 1)],
       ['RTT', fmt(a.rtt, ' ms')],
       ['Queue', a.rtt !== undefined && a.brtt !== undefined ? fmt(Math.max(0, a.rtt - a.brtt), ' ms') : '–'],
       ['Window', fmt(a.win, ' KB')],

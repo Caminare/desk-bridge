@@ -605,92 +605,103 @@ public class DeskBridgeStreamer {
     int tilesX = (outW + TileSize - 1) / TileSize;
     int tilesY = (outH + TileSize - 1) / TileSize;
     int total = tilesX * tilesY;
-    bool key = wantKey || reference == null || reference.Length != cur.Length;
-    bool[] changed = new bool[total];
-    int nChanged = 0;
-    if (!key) {
-      for (int ty = 0; ty < tilesY; ty++) {
-        for (int tx = 0; tx < tilesX; tx++) {
-          if (TileDiffers(cur, reference, tx, ty)) { changed[ty * tilesX + tx] = true; nChanged++; }
-        }
-      }
-      if (nChanged == 0) {
-        // Screen matches what the receiver already has: nothing to send.
-        lock (gate) {
-          spare.Push(cur);
-          if (pending != null && pending.Generation == myGen && !pending.Key) {
-            spare.Push(pending.Pixels);
-            pending = null;
-          }
-        }
-        return;
-      }
-      // Past half the screen, one full JPEG is smaller than many tiles.
-      if (nChanged * 2 > total) key = true;
-    }
-    // The screen is changing (video, scrolling, animation): keep capturing at the fast rate,
-    // not only after user input.
-    lock (gate) { activeUntil = Math.Max(activeUntil, clock.ElapsedMilliseconds + 500); }
 
-    sw.Restart();
-    List<int> rects = new List<int>();
-    MemoryStream output = new MemoryStream();
-    if (key) {
-      EncodeRect(0, 0, outW, outH, rects, output);
-      nChanged = total;
-    } else {
-      // Changed tiles -> horizontal runs per tile row -> runs with the same span on consecutive
-      // rows merged into rectangles. A video area becomes one JPEG instead of many strips.
-      List<int[]> open = new List<int[]>();   // [startTx, endTx, firstTy, lastTy]
-      List<int[]> rectsTiles = new List<int[]>();
-      for (int ty = 0; ty < tilesY; ty++) {
-        List<int[]> next = new List<int[]>();
-        int tx = 0;
-        while (tx < tilesX) {
-          if (!changed[ty * tilesX + tx]) { tx++; continue; }
-          int start = tx;
-          while (tx < tilesX && changed[ty * tilesX + tx]) tx++;
-          int[] match = null;
-          foreach (int[] o in open) {
-            if (o[0] == start && o[1] == tx && o[3] == ty - 1) { match = o; break; }
+    // If the sender takes a frame while we diff/encode, the reference changes under us. The
+    // capture (the expensive part) is still good, so diff and encode it again against the new
+    // reference instead of throwing it away.
+    for (int attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        lock (gate) {
+          myGen = generation; reference = refPixels; keyReq = keyRequested; wantKey = keyRequested != keySatisfied;
+        }
+      }
+      bool key = wantKey || reference == null || reference.Length != cur.Length;
+      bool[] changed = new bool[total];
+      int nChanged = 0;
+      if (!key) {
+        for (int ty = 0; ty < tilesY; ty++) {
+          for (int tx = 0; tx < tilesX; tx++) {
+            if (TileDiffers(cur, reference, tx, ty)) { changed[ty * tilesX + tx] = true; nChanged++; }
           }
-          if (match != null) {
-            match[3] = ty;
-            open.Remove(match);
-            next.Add(match);
-          } else {
-            next.Add(new int[] { start, tx, ty, ty });
+        }
+        if (nChanged == 0) {
+          // Screen matches what the receiver already has: nothing to send.
+          lock (gate) {
+            if (generation != myGen) continue;   // reference moved on: compare again
+            spare.Push(cur);
+            if (pending != null && pending.Generation == myGen && !pending.Key) {
+              spare.Push(pending.Pixels);
+              pending = null;
+            }
           }
+          return;
+        }
+        // Past half the screen, one full JPEG is smaller than many tiles.
+        if (nChanged * 2 > total) key = true;
+      }
+      // The screen is changing (video, scrolling, animation): keep capturing at the fast rate,
+      // not only after user input.
+      lock (gate) { activeUntil = Math.Max(activeUntil, clock.ElapsedMilliseconds + 500); }
+
+      sw.Restart();
+      List<int> rects = new List<int>();
+      MemoryStream output = new MemoryStream();
+      if (key) {
+        EncodeRect(0, 0, outW, outH, rects, output);
+        nChanged = total;
+      } else {
+        // Changed tiles -> horizontal runs per tile row -> runs with the same span on consecutive
+        // rows merged into rectangles. A video area becomes one JPEG instead of many strips.
+        List<int[]> open = new List<int[]>();   // [startTx, endTx, firstTy, lastTy]
+        List<int[]> rectsTiles = new List<int[]>();
+        for (int ty = 0; ty < tilesY; ty++) {
+          List<int[]> next = new List<int[]>();
+          int tx = 0;
+          while (tx < tilesX) {
+            if (!changed[ty * tilesX + tx]) { tx++; continue; }
+            int start = tx;
+            while (tx < tilesX && changed[ty * tilesX + tx]) tx++;
+            int[] match = null;
+            foreach (int[] o in open) {
+              if (o[0] == start && o[1] == tx && o[3] == ty - 1) { match = o; break; }
+            }
+            if (match != null) {
+              match[3] = ty;
+              open.Remove(match);
+              next.Add(match);
+            } else {
+              next.Add(new int[] { start, tx, ty, ty });
+            }
+          }
+          rectsTiles.AddRange(open);
+          open = next;
         }
         rectsTiles.AddRange(open);
-        open = next;
+        foreach (int[] r in rectsTiles) {
+          int x = r[0] * TileSize;
+          int y = r[2] * TileSize;
+          int rw = Math.Min(r[1] * TileSize, outW) - x;
+          int rh = Math.Min((r[3] + 1) * TileSize, outH) - y;
+          EncodeRect(x, y, rw, rh, rects, output);
+        }
       }
-      rectsTiles.AddRange(open);
-      foreach (int[] r in rectsTiles) {
-        int x = r[0] * TileSize;
-        int y = r[2] * TileSize;
-        int rw = Math.Min(r[1] * TileSize, outW) - x;
-        int rh = Math.Min((r[3] + 1) * TileSize, outH) - y;
-        EncodeRect(x, y, rw, rh, rects, output);
-      }
-    }
-    double encMs = sw.Elapsed.TotalMilliseconds;
+      double encMs = sw.Elapsed.TotalMilliseconds;
 
-    DeskBridgeFrame f = new DeskBridgeFrame();
-    f.Key = key; f.Width = outW; f.Height = outH; f.Rects = rects.ToArray();
-    f.Data = output.GetBuffer(); f.DataLength = (int)output.Length;
-    f.CaptureMs = capMs; f.EncodeMs = encMs; f.ChangedTiles = nChanged; f.TotalTiles = total; f.Quality = q;
-    f.Pixels = cur; f.Generation = myGen; f.KeyFor = keyReq; f.FastCapture = usedFast;
+      DeskBridgeFrame f = new DeskBridgeFrame();
+      f.Key = key; f.Width = outW; f.Height = outH; f.Rects = rects.ToArray();
+      f.Data = output.GetBuffer(); f.DataLength = (int)output.Length;
+      f.CaptureMs = capMs; f.EncodeMs = encMs; f.ChangedTiles = nChanged; f.TotalTiles = total; f.Quality = q;
+      f.Pixels = cur; f.Generation = myGen; f.KeyFor = keyReq; f.FastCapture = usedFast;
 
-    lock (gate) {
-      if (generation != myGen) {
-        // The sender took a frame while we worked, so our diff base is outdated. Retry next tick.
-        spare.Push(cur);
-        return;
+      lock (gate) {
+        if (generation != myGen) continue;
+        if (pending != null) spare.Push(pending.Pixels);
+        pending = f;
       }
-      if (pending != null) spare.Push(pending.Pixels);
-      pending = f;
+      return;
     }
+    // Reference kept changing (sender very busy): drop this capture, the next tick retries.
+    lock (gate) { spare.Push(cur); }
   }
 }
 "@
@@ -997,6 +1008,8 @@ while ($true) {
     $winStart = 0
     $kbps = 0.0              # smoothed upload rate
     $bytesWindow = 0
+    $framesWindow = 0
+    $sentFps = 0.0
     $rateWindowStart = 0
     $controllers = 0
 
@@ -1177,17 +1190,21 @@ while ($true) {
             $stats.brtt = [Math]::Round($baseRttMs)
           }
           $stats.win = [Math]::Round($byteBudget / 1024)
+          $stats.sfps = [Math]::Round($sentFps, 1)
           $sent = Start-FrameSend $ws $frame $frameSeq ([DeskBridgeWin32]::GetActiveWindowTitle()) $stats
           $inFlight[$frameSeq] = $nowMs
           $inFlightSize[$frameSeq] = $sent
           $inFlightBytes += $sent
           $bytesWindow += $sent
+          $framesWindow++
         }
       }
 
       if (($nowMs - $rateWindowStart) -ge 1000) {
         $instant = ($bytesWindow * 8.0) / ($nowMs - $rateWindowStart)
         $kbps = if ($kbps -le 0) { $instant } else { 0.6 * $kbps + 0.4 * $instant }
+        $sentFps = ($framesWindow * 1000.0) / ($nowMs - $rateWindowStart)
+        $framesWindow = 0
         $bytesWindow = 0
         $rateWindowStart = $nowMs
       }

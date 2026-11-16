@@ -8,6 +8,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 createRelay({
   port: Number(process.env.PORT || 3000),
+  host: process.env.HOST || '0.0.0.0',
+  trustProxy: process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true',
   dataDir: process.env.DESKBRIDGE_DATA_DIR || rootDir,
   distDir: path.join(rootDir, 'dist'),
   serveClient: isProduction ? 'static' : 'vite',
