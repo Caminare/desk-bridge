@@ -94,3 +94,17 @@ test('an axis where the picture fits stays centered', () => {
   const v = panByPixels(zoomAt(DEFAULT_VIEW, 1.5, 0.5, 0.5, band), 0, 5000, 390, 693, band);
   close(v.y + 0.5 / v.zoom, band.top + band.height / 2);
 });
+
+test('topInset lets the top of the screen be pulled below overlays', () => {
+  const b = { ...contentBounds(358, 201, 1335, 559), topInset: 0.3 }; // ultrawide in a 16:9 box
+  let v = zoomAt(DEFAULT_VIEW, 2, 0.5, 0.5, b);
+  v = panByPixels(v, 0, 100_000, 358, 201, b);
+  // Picture top may now sit 0.3 of the viewport height below the viewport's top edge.
+  close((b.top - v.y) * v.zoom, 0.3);
+  // Bottom limit is unchanged.
+  v = panByPixels(v, 0, -100_000, 358, 201, b);
+  close(v.y + 1 / v.zoom, b.top + b.height);
+  // No inset: stops exactly at the picture top.
+  const plain = panByPixels(zoomAt(DEFAULT_VIEW, 2, 0.5, 0.5, contentBounds(358, 201, 1335, 559)), 0, 100_000, 358, 201, contentBounds(358, 201, 1335, 559));
+  close(plain.y, contentBounds(358, 201, 1335, 559).top);
+});

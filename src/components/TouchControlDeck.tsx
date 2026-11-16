@@ -13,6 +13,7 @@ import {
   stepZoom,
   zoomAt,
   type ContentBounds,
+  type PanInsets,
   type ViewState,
 } from '../lib/viewTransform';
 import { ZoomControls } from './controlDeck/ZoomControls';
@@ -57,6 +58,7 @@ export function TouchControlDeck({
   const viewRef = useRef<ViewState>(DEFAULT_VIEW);
   const viewRafRef = useRef(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const topInsetRef = useRef(0);
   const directTouchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{
     startDist: number;
@@ -279,10 +281,16 @@ export function TouchControlDeck({
   useEffect(() => () => cancelAnimationFrame(viewRafRef.current), []);
 
   // Where the (letterboxed) picture sits in the viewport; zoom and pan stay on the picture.
-  const pictureBounds = (): ContentBounds => {
+  const pictureBounds = (): ContentBounds & PanInsets => {
     const el = viewportRef.current;
     const c = streamCanvasRef.current;
-    return contentBounds(el?.clientWidth ?? 0, el?.clientHeight ?? 0, c?.width ?? 0, c?.height ?? 0);
+    const h = el?.clientHeight ?? 0;
+    return {
+      ...contentBounds(el?.clientWidth ?? 0, h, c?.width ?? 0, c?.height ?? 0),
+      // Overlays at the top (minimap, stats) may hide browser tabs or title bars: allow pulling
+      // the picture's top edge down below them.
+      topInset: h > 0 ? Math.min(0.5, topInsetRef.current / h) : 0,
+    };
   };
 
   // Each computer starts unzoomed.
@@ -750,6 +758,7 @@ export function TouchControlDeck({
         onWheel={handleViewportWheel}
         onMinimapCenter={centerViewOn}
         viewportRef={viewportRef}
+        topInsetRef={topInsetRef}
         canvasRef={streamCanvasRef}
         tapFeedback={tapFeedback}
       />
