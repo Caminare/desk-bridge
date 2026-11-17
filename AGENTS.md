@@ -119,6 +119,7 @@ If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`
 - Keep the PowerShell agent dependency-free (PowerShell 5.1 + .NET Framework only). It is generated from a JS template literal: escape `` ` ``, `${` and backslashes accordingly. In the inline C# (`Add-Type`), avoid backslashes entirely (use `(char)10`, not `'\n'`), and stick to C# 5 syntax (no `$"..."` interpolation), because Windows PowerShell 5.1 compiles it with the .NET Framework compiler.
 - Keyboard input goes through `SendInput` (`[DeskBridgeWin32]::TypeUnicode` / `SendCombo`) and `Send-KeyCombo`. Add new key names to `$script:VkMap`, and don't reintroduce `SendKeys`.
 - Script-level agent state that functions change must be assigned through `$script:` (e.g. `Select-Monitor` swaps `$script:bounds`, `$script:capBmp`).
+- The agent runs **per-monitor DPI aware** (`[DeskBridgeWin32]::EnablePerMonitorDpi()`: process-level PMv2, else thread-level, else system DPI). The capture thread sets the same thread context. Without it, a monitor whose scaling differs from the primary is reported with scaled bounds, and its stream comes out cropped or as a small "miniature". The call must stay **before the first `[System.Windows.Forms.Screen]` use**, because .NET caches monitor bounds.
 - `tests/agentGenerator.test.ts` only checks the generated script's structure. **Any agent change must also be run on a real Windows 10/11 machine**, because CI cannot run PowerShell or compile the C#.
 - Gemini model ids live in `server/aiAssistant.ts` with env overrides `GEMINI_MODEL` and `GEMINI_TRANSCRIBE_MODEL`. The Gemini key is only read server-side.
 - Don't commit build output (`dist/`), runtime state files, or a second lockfile.
@@ -133,5 +134,5 @@ If you add an input type, update `RemoteInputEvent` in `src/types/deskbridge.ts`
 - Streaming is still JPEG (tiled). A real video codec (H.264 via WebRTC, or a native encoder in the agent) would cut bandwidth much further for full-screen motion such as video or scrolling.
 - The relay's backlog-skip path (`bufferedAmount`) is not covered by tests, because it needs a deliberately slow socket.
 - There are no UI tests, and the PowerShell agent has no automated runtime tests (no Windows runner).
-- `Win+L` is mapped to `LockWorkStation()`, and `Ctrl+Alt+Del` cannot be injected at all (secure attention sequence).
+- `Win+L` is mapped to `LockWorkStation()`, and `Ctrl+Alt+Del` cannot be injected at all (secure attention sequence). A locked PC can't be unlocked remotely: the PIN box is on the secure desktop (#10). The client confirms every locking input (`isLockingInput` in `src/lib/remoteInput.ts`, checked in `sendRemoteInput`). The agent's opt-in `-KeepAwake` (download option `keepAwake=1`) calls `SetThreadExecutionState` and nudges the idle timer every 50 s while a controller is connected.
 - An agent running unelevated cannot send input to elevated windows (UIPI).

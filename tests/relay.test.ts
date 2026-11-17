@@ -64,6 +64,14 @@ describe('REST authentication', () => {
     assert.equal(res.status, 401);
   });
 
+  test('agent download honours the keep-awake option', async () => {
+    const cookie = await loginCookie(t.base);
+    const plain = await (await fetch(`${t.base}/api/host-agent/download?format=ps1`, { headers: { cookie } })).text();
+    assert.ok(plain.includes('[bool]$KeepAwake = $false'));
+    const awake = await (await fetch(`${t.base}/api/host-agent/download?format=ps1&keepAwake=1`, { headers: { cookie } })).text();
+    assert.ok(awake.includes('[bool]$KeepAwake = $true'));
+  });
+
   test('authenticated requests succeed and agent download is not cacheable', async () => {
     const cookie = await loginCookie(t.base);
     assert.equal((await fetch(`${t.base}/api/hosts`, { headers: { cookie } })).status, 200);

@@ -11,7 +11,10 @@ const QUICK_PS_COMMAND = `powershell -ExecutionPolicy Bypass -File .\\DeskBridge
 /** Download links for the native PowerShell agent, its launcher and the Node agent. */
 export function AgentDownloadCard({ hostName, groupLabel }: AgentDownloadCardProps) {
   const [copiedCmd, setCopiedCmd] = useState(false);
-  const downloadBaseParams = `name=${encodeURIComponent(hostName)}&group=${encodeURIComponent(groupLabel)}`;
+  const [keepAwake, setKeepAwake] = useState(false);
+  const downloadBaseParams = `name=${encodeURIComponent(hostName)}&group=${encodeURIComponent(groupLabel)}${
+    keepAwake ? '&keepAwake=1' : ''
+  }`;
   const quickPsCommand = QUICK_PS_COMMAND;
 
   const handleCopyCommand = () => {
@@ -46,7 +49,22 @@ export function AgentDownloadCard({ hostName, groupLabel }: AgentDownloadCardPro
           </p>
         </div>
 
-        <div className="space-y-2.5 pt-2">
+        <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={keepAwake}
+          onChange={(e) => setKeepAwake(e.target.checked)}
+          className="mt-0.5 w-4 h-4 rounded border-slate-300 dark:border-slate-700 text-blue-600 shrink-0"
+        />
+        <span className="text-xs text-slate-600 dark:text-slate-400">
+          <span className="block text-sm font-medium text-slate-900 dark:text-white">Keep this PC awake while a phone is connected</span>
+          Prevents sleep, screen-off and idle lock during a session. A locked PC can&apos;t be unlocked remotely, because Windows
+          doesn&apos;t let remote apps type the PIN. Only enable this on PCs in a safe place. Applies to the PowerShell agent;
+          download it again after changing this.
+        </span>
+      </label>
+
+      <div className="space-y-2.5 pt-2">
           <a
             href={`/api/host-agent/download?format=ps1&${downloadBaseParams}`}
             download="DeskBridge-Host.ps1"
@@ -75,7 +93,8 @@ export function AgentDownloadCard({ hostName, groupLabel }: AgentDownloadCardPro
           </a>
         </div>
 
-        <p className="flex items-start gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-700 dark:text-amber-400">
+  
+      <p className="flex items-start gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-700 dark:text-amber-400">
         <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
         <span>
           These scripts contain your relay&apos;s enrollment key. Anyone who has them can add a machine to your relay,

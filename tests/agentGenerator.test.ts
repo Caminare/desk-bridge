@@ -94,6 +94,9 @@ test('PowerShell agent: capture pipeline runs on a thread and sends tiled frames
     '$windowOpen = ($inFlight.Count -eq 0) -or ($inFlight.Count -lt $MaxInFlight -and $inFlightBytes -lt $byteBudget)',
     '$stats.brtt = [Math]::Round($baseRttMs)',
     'double pixelBudget = mw * (mw * 9.0 / 16.0);',
+    'public static string EnablePerMonitorDpi()',
+    '$script:DpiMode = [DeskBridgeWin32]::EnablePerMonitorDpi()',
+    'SetThreadDpiAwarenessContext(new IntPtr(-4));',
     'StretchBlt(memDC, 0, 0, outW, outH, screen, curBounds.X, curBounds.Y, curBounds.Width, curBounds.Height, SRCCOPY)',
     'dibBitmap = new Bitmap(w, h, stride, PixelFormat.Format24bppRgb, dibBits);',
     'AllowFastCapture = false;',
@@ -125,4 +128,19 @@ test('PowerShell agent: SendInput keyboard and monitor switching are wired up', 
   }
   // SendKeys is gone: it mangled Unicode and could not express arbitrary combos.
   assert.doesNotMatch(ps1, /SendKeys/);
+});
+
+test('PowerShell agent: keep-awake is opt-in and wired to controller count', () => {
+  const off = generatePowerShellHostScript(opts);
+  assert.ok(off.includes('[bool]$KeepAwake = $false'), 'off by default');
+  const on = generatePowerShellHostScript({ ...opts, keepAwake: true });
+  assert.ok(on.includes('[bool]$KeepAwake = $true'));
+  for (const needle of [
+    'public static void SetKeepAwake(bool on)',
+    'public static void NudgeIdleTimer()',
+    'if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($controllers -gt 0) }',
+    'if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($false) }',
+  ]) {
+    assert.ok(on.includes(needle), `missing: ${needle}`);
+  }
 });

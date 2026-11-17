@@ -249,6 +249,7 @@ systemctl restart deskbridge
 - **`Could not get lock /var/lib/dpkg/lock-frontend`:** automatic updates are running on a new server. Wait a few minutes and run the setup again. Never delete the lock file.
 - **The site doesn't load or shows a certificate error:** make sure the domain points at the server's IPv4 address (`ping yourname.duckdns.org`) and ports 80/443 are open, then check `journalctl -u caddy -n 50 --no-pager`.
 - **Login works but PCs don't appear:** re-download the agent from the new address, and check `journalctl -u deskbridge -f` while the agent starts.
+- **The PC locked and the PIN can't be typed:** Windows doesn't allow remote apps to type on the lock screen (secure desktop), so someone at the PC has to unlock it (remote unlock is tracked in #10). To avoid it, tick **"Keep this PC awake while a phone is connected"** before downloading the agent, and on that PC set *Settings → Accounts → Sign-in options → "If you've been away…" → Never*. Only do this on PCs in a safe place. The app asks for confirmation before sending Win+L.
 
 ---
 

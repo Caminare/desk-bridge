@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActivityLogEntry, HostProfile, RemoteInputEvent } from '../types/deskbridge';
 import { apiFetch, notifyUnauthorized } from '../lib/auth';
 import { FrameStore } from '../lib/frameCompositor';
+import { LOCK_WARNING, isLockingInput } from '../lib/remoteInput';
 
 /** How often thumbnails (fleet cards, AI previews) are refreshed from the live canvas. */
 const SNAPSHOT_INTERVAL_MS = 2000;
@@ -40,6 +41,8 @@ export function useDeskBridgeSocket() {
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
 
   activeHostIdRef.current = activeHostId;
+  const hostsRef = useRef<HostProfile[]>([]);
+  hostsRef.current = hosts;
 
   const appendActivity = useCallback(
     (hostId: string, source: ActivityLogEntry['source'], summary: string) => {
@@ -287,6 +290,12 @@ export function useDeskBridgeSocket() {
     (input: RemoteInputEvent, targetHostId?: string, source: ActivityLogEntry['source'] = 'touch') => {
       const hostId = targetHostId || activeHostIdRef.current;
       if (!hostId) return false;
+      // Locking a real PC can't be undone remotely (secure desktop), so confirm first. Covers the
+      // Lock PC button, typed combos, the keyboard's sticky Win key and AI actions alike.
+      const target = hostsRef.current.find((h) => h.hostId === hostId);
+      if (isLockingInput(input) && target?.agentType !== 'browser-host' && !window.confirm(LOCK_WARNING)) {
+        return false;
+      }
       const sent = sendWs('client:input', { hostId, input });
       if (sent && input.type !== 'mousemove' && input.type !== 'quality') {
         const summary =

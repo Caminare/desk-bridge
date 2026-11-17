@@ -5,6 +5,8 @@ export interface WindowsAgentOptions {
   groupLabel: string;
   /** Server enrollment key embedded in the script; lets the agent register. */
   enrollKey: string;
+  /** Keep the PC from sleeping or idle-locking while a phone is connected (opt-in). */
+  keepAwake?: boolean;
 }
 
 export function generatePowerShellHostScript(opts: WindowsAgentOptions): string {
@@ -37,7 +39,11 @@ param(
   [int]$MonitorIndex = -1,
   # Hard cap on frames sent but not yet acknowledged. The actual window is sized in bytes and
   # adapts to queuing delay, so long (high-latency) paths can keep many small frames in flight.
-  [int]$MaxInFlight = 32
+  [int]$MaxInFlight = 32,
+  # While a phone is connected, keep the PC awake and stop idle lock / screen saver. A locked
+  # PC can't be unlocked remotely (the PIN box is on the secure desktop), so this avoids getting
+  # stuck mid-session. Less secure: only enable on PCs in a safe place.
+  [bool]$KeepAwake = $${opts.keepAwake ? 'true' : 'false'}
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,11 +72,58 @@ public static class DeskBridgeWin32 {
   [DllImport("user32.dll")]
   public static extern bool SetProcessDPIAware();
 
+  [DllImport("user32.dll", SetLastError = true)]
+  static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
+  [DllImport("user32.dll")]
+  static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+
+  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+  static readonly IntPtr PerMonitorAwareV2 = new IntPtr(-4);
+
+  /// Report real pixels on every monitor, even when monitors use different scaling (125%, 150%...).
+  /// With only system DPI awareness, a monitor whose scale differs from the primary is reported
+  /// with scaled bounds, so captures come out cropped or as a "miniature" with empty space.
+  /// Returns the mode that took effect: process-pmv2, thread-pmv2 or system.
+  public static string EnablePerMonitorDpi() {
+    try {
+      if (SetProcessDpiAwarenessContext(PerMonitorAwareV2)) return "process-pmv2";
+    } catch (EntryPointNotFoundException) {
+      // Windows older than 10 1703.
+    }
+    try {
+      // Process awareness may already be fixed (e.g. by the host's manifest): set it for this thread.
+      if (SetThreadDpiAwarenessContext(PerMonitorAwareV2) != IntPtr.Zero) return "thread-pmv2";
+    } catch (EntryPointNotFoundException) {
+      // Windows older than 10 1607.
+    }
+    SetProcessDPIAware();
+    return "system";
+  }
+
   [DllImport("user32.dll")]
   public static extern IntPtr GetForegroundWindow();
 
   [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
   public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+
+  [DllImport("kernel32.dll")]
+  public static extern uint SetThreadExecutionState(uint esFlags);
+
+  public const uint ES_CONTINUOUS = 0x80000000;
+  public const uint ES_SYSTEM_REQUIRED = 0x00000001;
+  public const uint ES_DISPLAY_REQUIRED = 0x00000002;
+  public const uint MOUSEEVENTF_MOVE = 0x0001;
+
+  /// Ask Windows to keep the system and display on (true) or restore normal idle behaviour.
+  public static void SetKeepAwake(bool on) {
+    SetThreadExecutionState(on ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED) : ES_CONTINUOUS);
+  }
+
+  /// Zero-distance mouse event: resets the idle timer (screen saver / idle lock) without moving the cursor.
+  public static void NudgeIdleTimer() {
+    mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, UIntPtr.Zero);
+  }
 
   public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
   public const uint MOUSEEVENTF_LEFTUP = 0x0004;
@@ -357,7 +410,16 @@ public class DeskBridgeStreamer {
     }
   }
 
+  [DllImport("user32.dll")]
+  static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+
   void Run() {
+    // Capture in real pixels on every monitor (see DeskBridgeWin32.EnablePerMonitorDpi).
+    try {
+      SetThreadDpiAwarenessContext(new IntPtr(-4));
+    } catch (EntryPointNotFoundException) {
+      // Older Windows: keep the process default.
+    }
     while (running) {
       long started = clock.ElapsedMilliseconds;
       int interval;
@@ -706,7 +768,8 @@ public class DeskBridgeStreamer {
 }
 "@
 
-[DeskBridgeWin32]::SetProcessDPIAware() | Out-Null
+# Must run before the first [System.Windows.Forms.Screen] call, which caches monitor bounds.
+$script:DpiMode = [DeskBridgeWin32]::EnablePerMonitorDpi()
 
 $jsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 $jsonSerializer.MaxJsonLength = 10485760
@@ -962,6 +1025,8 @@ Write-Host "=====================================================" -ForegroundCo
 Write-Host "  DeskBridge Windows Host Agent" -ForegroundColor White
 Write-Host "  Workstation: $HostName ($GroupLabel)" -ForegroundColor Gray
 Write-Host "  Resolution : \${screenW}x\${screenH}" -ForegroundColor Gray
+Write-Host "  Monitors   : $((Get-MonitorList | ForEach-Object { '{0}x{1}{2}' -f $_.width, $_.height, $(if ($_.primary) { ' (main)' } else { '' }) }) -join ', ')" -ForegroundColor Gray
+Write-Host "  DPI mode   : $script:DpiMode" -ForegroundColor Gray
 Write-Host "=====================================================" -ForegroundColor Cyan
 
 while ($true) {
@@ -1012,6 +1077,7 @@ while ($true) {
     $sentFps = 0.0
     $rateWindowStart = 0
     $controllers = 0
+    $lastIdleNudge = 0
 
     $recvTask = $null
     $shouldClose = $false
@@ -1059,6 +1125,7 @@ while ($true) {
             Write-Host ""
           } elseif ($msg.event -eq 'host:controller_count') {
             $controllers = [int]$msg.payload.count
+            if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($controllers -gt 0) }
             $inFlight.Clear()
             $inFlightSize.Clear()
             $inFlightBytes = 0
@@ -1208,6 +1275,10 @@ while ($true) {
         $bytesWindow = 0
         $rateWindowStart = $nowMs
       }
+      if ($KeepAwake -and $controllers -gt 0 -and ($nowMs - $lastIdleNudge) -ge 50000) {
+        [DeskBridgeWin32]::NudgeIdleTimer()
+        $lastIdleNudge = $nowMs
+      }
       if ($script:streamer.LastError) {
         Write-Host "Capture error: $($script:streamer.LastError)" -ForegroundColor DarkYellow
         $script:streamer.LastError = ''
@@ -1216,6 +1287,7 @@ while ($true) {
   } catch {
     Write-Host "Connection interrupted: $($_.Exception.Message). Reconnecting in 4s..." -ForegroundColor Red
   } finally {
+    if ($KeepAwake) { [DeskBridgeWin32]::SetKeepAwake($false) }
     $script:streamer.Paused = $true
     $script:sendTask = $null
     $ws.Dispose()

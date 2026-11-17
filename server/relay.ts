@@ -450,7 +450,8 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
       return;
     }
 
-    const content = generatePowerShellHostScript({ wsUrl, appUrl, hostName, groupLabel, enrollKey: auth.enrollKey });
+    const keepAwake = req.query.keepAwake === '1';
+    const content = generatePowerShellHostScript({ wsUrl, appUrl, hostName, groupLabel, enrollKey: auth.enrollKey, keepAwake });
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="DeskBridge-Host.ps1"');
     res.send(content);
