@@ -6,6 +6,8 @@ export interface PointerHandlers {
   onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /** Capture lost without a pointerup/cancel: treat it as a cancel so no finger stays "down". */
+  onLostPointerCapture?: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
 
 interface TrackpadPanelProps {
