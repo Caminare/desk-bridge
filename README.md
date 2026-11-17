@@ -127,7 +127,7 @@ DeskBridge is built for controlling PCs over the internet, so it keeps the strea
 
 Tap the **pulse icon** in the Control Deck or fullscreen toolbar to see live stats: FPS, download/upload rate, round trip and queuing delay, send window, capture/encode/decode times, current quality and changed tiles. A high round trip with low **Queue** is just distance and is handled fine. A growing **Queue** with upload near your PC's upload speed means the connection is the bottleneck. A high **Capture** time means the PC is slow at grabbing the screen. Where the relay runs matters too: every frame goes PC → relay → phone, so a relay on a well-connected server near your users is faster than one at home behind a tunnel.
 
-Agent tuning parameters (`DeskBridge-Host.ps1 -Name value`): `-MaxStreamWidth` / `-JpegQuality` (starting quality), `-FrameIntervalMs` (idle capture interval, default 100), `-MaxInFlight` (hard cap on unacknowledged frames, default 32; the real window adapts automatically).
+Agent tuning parameters (`DeskBridge-Host.ps1 -Name value`): `-MaxStreamWidth` / `-JpegQuality` (starting quality), `-FrameIntervalMs` (idle capture interval, default 100), `-MaxInFlight` (hard cap on unacknowledged frames, default 32; the real window adapts automatically), `-ScaleMode auto|halftone|fast` (downscaling: `auto` uses fast coarse scaling while the screen is changing a lot and sharp HALFTONE once it settles). The `.bat` launcher passes its arguments through, e.g. `DeskBridge-Host.bat -ScaleMode fast`.
 
 ---
 
