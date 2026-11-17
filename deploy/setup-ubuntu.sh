@@ -116,6 +116,8 @@ install -d -o "$APP_USER" -g "$APP_USER" -m 700 "$DATA_DIR"
 
 step "Fetching DeskBridge ($BRANCH)"
 if [[ -d "$APP_DIR/.git" ]]; then
+  # Root-owned leftovers (manual commands run as root) make git refuse with "dubious ownership".
+  chown -R "$APP_USER:$APP_USER" "$APP_DIR"
   sudo -u "$APP_USER" git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH"
   sudo -u "$APP_USER" git -C "$APP_DIR" checkout -B "$BRANCH" FETCH_HEAD
 else
