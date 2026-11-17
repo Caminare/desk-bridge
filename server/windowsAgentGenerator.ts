@@ -43,7 +43,12 @@ param(
   # While a phone is connected, keep the PC awake and stop idle lock / screen saver. A locked
   # PC can't be unlocked remotely (the PIN box is on the secure desktop), so this avoids getting
   # stuck mid-session. Less secure: only enable on PCs in a safe place.
-  [bool]$KeepAwake = $${opts.keepAwake ? 'true' : 'false'}
+  [bool]$KeepAwake = $${opts.keepAwake ? 'true' : 'false'},
+  # How the screen is downscaled to the stream size. 'auto': coarse (fast) while much of the
+  # screen keeps changing, smooth (sharp text) once it settles. 'halftone': always smooth.
+  # 'fast': always coarse. The stats panel shows the capture time of each.
+  [ValidateSet('auto', 'halftone', 'fast')]
+  [string]$ScaleMode = 'auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -268,6 +273,27 @@ public class DeskBridgeFrame {
   public int Quality;
   // True when captured with the one-call GDI StretchBlt path, false for the GDI+ fallback.
   public bool FastCapture;
+  // Scaling used: "ht" (GDI HALFTONE), "coc" (GDI COLORONCOLOR), "bil" / "nn" (GDI+ fallback
+  // bilinear / nearest neighbour), "none" (stream at native size).
+  public string Scale = "";
+  public double DiffMs;
+  // Why this frame is a keyframe: "req" (requested), "init" (no usable reference), "big" (over
+  // half the tiles changed). Empty for deltas. LastKeyReason is the latest keyframe's reason.
+  public string KeyReason = "";
+  public string LastKeyReason = "";
+  // Time between the frame entering the mailbox and the sender taking it, ms.
+  public double MailboxMs;
+  // Capture-thread diagnostics: rates over the last second and smoothed costs (ms).
+  public double CapturesPerSec;
+  public double ProducedPerSec;
+  public double UnchangedPerSec;
+  public double DroppedPerSec;
+  public double RediffsPerSec;
+  public double KeyframesPerSec;
+  public double TickMs;
+  public double CapSmoothMs;
+  public double CapCoarseMs;
+  internal long ReadyAt;
   internal byte[] Pixels;
   internal int Generation;
   internal int KeyFor;
@@ -312,11 +338,31 @@ public class DeskBridgeStreamer {
 
   const uint SRCCOPY = 0x00CC0020;
   const int HALFTONE = 4;
+  const int COLORONCOLOR = 3;
   const int SM_CXCURSOR = 13;
   const int SM_CYCURSOR = 14;
 
   /// Set to false (automatically, on failure) to use the GDI+ CopyFromScreen fallback.
   public volatile bool AllowFastCapture = true;
+
+  /// Downscaling: 0 = auto (coarse while much of the screen keeps changing, smooth once it
+  /// settles), 1 = always smooth (HALFTONE / bilinear), 2 = always coarse (COLORONCOLOR / nearest).
+  public volatile int ScaleMode = 0;
+  // Auto: a capture where at least this share of tiles changed counts as motion. Two in a row
+  // switch to coarse scaling, which stays on until the screen has been calm for CoarseHoldMs.
+  const int MotionPercent = 15;
+  const int CoarseHoldMs = 500;
+  int curStretchMode;
+  int motionStreak;
+  long coarseUntil;
+
+  // Diagnostics, capture thread only.
+  long rateStart;
+  int nTicks, nProduced, nUnchanged, nDropped, nRediffs, nKeys;
+  double capturesPerSec, producedPerSec, unchangedPerSec, droppedPerSec, rediffsPerSec, keysPerSec;
+  double tickMs, capSmoothMs, capCoarseMs;
+  string lastKeyReason = "";
+
   bool fastActive;
   IntPtr memDC = IntPtr.Zero;
   IntPtr dib = IntPtr.Zero;
@@ -360,6 +406,7 @@ public class DeskBridgeStreamer {
 
   // Shared frame state (guarded by gate).
   byte[] refPixels;
+  string refScale = "";
   int generation;
   DeskBridgeFrame pending;
   readonly Stack<byte[]> spare = new Stack<byte[]>();
@@ -403,7 +450,9 @@ public class DeskBridgeStreamer {
       pending = null;
       if (refPixels != null) spare.Push(refPixels);
       refPixels = f.Pixels;
+      refScale = f.Scale;
       f.Pixels = null;
+      f.MailboxMs = clock.ElapsedMilliseconds - f.ReadyAt;
       generation++;
       if (f.Key && f.KeyFor > keySatisfied) keySatisfied = f.KeyFor;
       return f;
@@ -426,15 +475,50 @@ public class DeskBridgeStreamer {
       lock (gate) { interval = started < activeUntil ? ActiveIntervalMs : IdleIntervalMs; }
       if (!Paused) {
         try {
+          double t0 = clock.Elapsed.TotalMilliseconds;
           Tick();
+          tickMs = Smooth(tickMs, clock.Elapsed.TotalMilliseconds - t0);
+          nTicks++;
           LastError = "";
         } catch (Exception e) {
           LastError = e.Message;
           Thread.Sleep(250);
         }
+        UpdateRates();
+      } else {
+        rateStart = clock.ElapsedMilliseconds;
+        nTicks = nProduced = nUnchanged = nDropped = nRediffs = nKeys = 0;
       }
       long spent = clock.ElapsedMilliseconds - started;
       Thread.Sleep((int)Math.Max(2, interval - spent));
+    }
+  }
+
+  static double Smooth(double avg, double sample) { return avg <= 0 ? sample : 0.8 * avg + 0.2 * sample; }
+
+  void UpdateRates() {
+    long now = clock.ElapsedMilliseconds;
+    long span = now - rateStart;
+    if (span < 1000) return;
+    double s = span / 1000.0;
+    capturesPerSec = nTicks / s;
+    producedPerSec = nProduced / s;
+    unchangedPerSec = nUnchanged / s;
+    droppedPerSec = nDropped / s;
+    rediffsPerSec = nRediffs / s;
+    keysPerSec = nKeys / s;
+    nTicks = nProduced = nUnchanged = nDropped = nRediffs = nKeys = 0;
+    rateStart = now;
+  }
+
+  // Auto scaling. Only diffs against a reference scaled the same way say anything about motion:
+  // right after a switch every tile differs, which must not count as the screen changing.
+  void UpdateMotion(int nChanged, int total) {
+    if (nChanged * 100 >= total * MotionPercent) {
+      motionStreak++;
+      if (motionStreak >= 2) coarseUntil = clock.ElapsedMilliseconds + CoarseHoldMs;
+    } else {
+      motionStreak = 0;
     }
   }
 
@@ -517,6 +601,7 @@ public class DeskBridgeStreamer {
       oldBitmap = SelectObject(memDC, dib);
       SetStretchBltMode(memDC, HALFTONE);
       SetBrushOrgEx(memDC, 0, 0, IntPtr.Zero);
+      curStretchMode = HALFTONE;
     } finally {
       ReleaseDC(IntPtr.Zero, screen);
     }
@@ -549,7 +634,15 @@ public class DeskBridgeStreamer {
     fastActive = false;
   }
 
-  void CaptureFast(byte[] dst) {
+  void CaptureFast(byte[] dst, bool coarse) {
+    // HALFTONE averages every source pixel (sharp text, but CPU-heavy on a big screen);
+    // COLORONCOLOR just drops pixels, which is far cheaper and fine while things are moving.
+    int mode = coarse ? COLORONCOLOR : HALFTONE;
+    if (mode != curStretchMode) {
+      SetStretchBltMode(memDC, mode);
+      if (mode == HALFTONE) SetBrushOrgEx(memDC, 0, 0, IntPtr.Zero);
+      curStretchMode = mode;
+    }
     IntPtr screen = GetDC(IntPtr.Zero);
     if (screen == IntPtr.Zero) throw new InvalidOperationException("GetDC failed");
     try {
@@ -635,19 +728,24 @@ public class DeskBridgeStreamer {
   }
 
   void Tick() {
-    Rectangle b; int mw; int q; bool dirty; int myGen; byte[] reference; int keyReq; bool wantKey;
+    Rectangle b; int mw; int q; bool dirty; int myGen; byte[] reference; string referenceScale; int keyReq; bool wantKey;
     lock (gate) {
       b = bounds; mw = maxWidth; q = quality; dirty = configDirty; configDirty = false;
-      myGen = generation; reference = refPixels; keyReq = keyRequested; wantKey = keyRequested != keySatisfied;
+      myGen = generation; reference = refPixels; referenceScale = refScale; keyReq = keyRequested; wantKey = keyRequested != keySatisfied;
     }
     if (dirty || !configured) Configure(b, mw, q);
+
+    int scaleMode = ScaleMode;
+    bool coarse = scaleMode == 2 || (scaleMode == 0 && clock.ElapsedMilliseconds < coarseUntil);
+    bool scaled = outW != curBounds.Width || outH != curBounds.Height;
+    string scale = !scaled ? "none" : fastActive ? (coarse ? "coc" : "ht") : (coarse ? "nn" : "bil");
 
     Stopwatch sw = Stopwatch.StartNew();
     byte[] cur = TakeSpare(stride * outH);
     bool usedFast = fastActive;
     if (fastActive) {
       try {
-        CaptureFast(cur);
+        CaptureFast(cur, coarse);
       } catch (Exception e) {
         // Switch to the GDI+ path for good and resync with a keyframe.
         LastError = "Fast capture failed, switching to GDI+ fallback: " + e.Message;
@@ -659,10 +757,18 @@ public class DeskBridgeStreamer {
     } else {
       capG.CopyFromScreen(curBounds.Location, Point.Empty, curBounds.Size, CopyPixelOperation.SourceCopy);
       DrawCursor();
-      if (outG != null) outG.DrawImage(capBmp, 0, 0, outW, outH);
+      if (outG != null) {
+        outG.InterpolationMode = coarse ? InterpolationMode.NearestNeighbor : InterpolationMode.Bilinear;
+        outG.DrawImage(capBmp, 0, 0, outW, outH);
+      }
       CopyPixels(cur);
     }
     double capMs = sw.Elapsed.TotalMilliseconds;
+    if (scaled) {
+      if (coarse) capCoarseMs = Smooth(capCoarseMs, capMs);
+      else capSmoothMs = Smooth(capSmoothMs, capMs);
+    }
+    bool motionChecked = false;
 
     int tilesX = (outW + TileSize - 1) / TileSize;
     int tilesY = (outH + TileSize - 1) / TileSize;
@@ -673,18 +779,27 @@ public class DeskBridgeStreamer {
     // reference instead of throwing it away.
     for (int attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) {
+        nRediffs++;
         lock (gate) {
-          myGen = generation; reference = refPixels; keyReq = keyRequested; wantKey = keyRequested != keySatisfied;
+          myGen = generation; reference = refPixels; referenceScale = refScale; keyReq = keyRequested; wantKey = keyRequested != keySatisfied;
         }
       }
-      bool key = wantKey || reference == null || reference.Length != cur.Length;
+      string keyReason = wantKey ? "req" : (reference == null || reference.Length != cur.Length) ? "init" : "";
+      bool key = keyReason.Length > 0;
       bool[] changed = new bool[total];
       int nChanged = 0;
+      double diffMs = 0;
       if (!key) {
+        sw.Restart();
         for (int ty = 0; ty < tilesY; ty++) {
           for (int tx = 0; tx < tilesX; tx++) {
             if (TileDiffers(cur, reference, tx, ty)) { changed[ty * tilesX + tx] = true; nChanged++; }
           }
+        }
+        diffMs = sw.Elapsed.TotalMilliseconds;
+        if (!motionChecked && referenceScale == scale) {
+          motionChecked = true;
+          UpdateMotion(nChanged, total);
         }
         if (nChanged == 0) {
           // Screen matches what the receiver already has: nothing to send.
@@ -696,10 +811,11 @@ public class DeskBridgeStreamer {
               pending = null;
             }
           }
+          nUnchanged++;
           return;
         }
         // Past half the screen, one full JPEG is smaller than many tiles.
-        if (nChanged * 2 > total) key = true;
+        if (nChanged * 2 > total) { key = true; keyReason = "big"; }
       }
       // The screen is changing (video, scrolling, animation): keep capturing at the fast rate,
       // not only after user input.
@@ -754,15 +870,28 @@ public class DeskBridgeStreamer {
       f.Data = output.GetBuffer(); f.DataLength = (int)output.Length;
       f.CaptureMs = capMs; f.EncodeMs = encMs; f.ChangedTiles = nChanged; f.TotalTiles = total; f.Quality = q;
       f.Pixels = cur; f.Generation = myGen; f.KeyFor = keyReq; f.FastCapture = usedFast;
+      f.Scale = scale; f.DiffMs = diffMs; f.KeyReason = key ? keyReason : "";
+      f.CapturesPerSec = capturesPerSec; f.ProducedPerSec = producedPerSec; f.UnchangedPerSec = unchangedPerSec;
+      f.DroppedPerSec = droppedPerSec; f.RediffsPerSec = rediffsPerSec; f.KeyframesPerSec = keysPerSec;
+      f.TickMs = tickMs; f.CapSmoothMs = capSmoothMs; f.CapCoarseMs = capCoarseMs;
 
       lock (gate) {
         if (generation != myGen) continue;
-        if (pending != null) spare.Push(pending.Pixels);
+        if (pending != null) {
+          // The sender never took the previous frame: it is replaced by this fresher one.
+          spare.Push(pending.Pixels);
+          nDropped++;
+        }
+        nProduced++;
+        if (key) { nKeys++; lastKeyReason = keyReason; }
+        f.LastKeyReason = lastKeyReason;
+        f.ReadyAt = clock.ElapsedMilliseconds;
         pending = f;
       }
       return;
     }
     // Reference kept changing (sender very busy): drop this capture, the next tick retries.
+    nDropped++;
     lock (gate) { spare.Push(cur); }
   }
 }
@@ -823,6 +952,7 @@ $screenH = $bounds.Height
 $script:sendBuf = New-Object byte[] 2097152
 $script:streamer = New-Object DeskBridgeStreamer -ArgumentList $bounds, $MaxStreamWidth, $JpegQuality
 $script:streamer.IdleIntervalMs = [Math]::Max(33, $FrameIntervalMs)
+$script:streamer.ScaleMode = $(if ($ScaleMode -eq 'halftone') { 1 } elseif ($ScaleMode -eq 'fast') { 2 } else { 0 })
 $script:streamer.Start()
 
 function Select-Monitor([int]$index) {
@@ -1078,6 +1208,13 @@ while ($true) {
     $rateWindowStart = 0
     $controllers = 0
     $lastIdleNudge = 0
+    # Diagnostics for the stats panel.
+    $loopCount = 0           # main-loop iterations this second
+    $loopsPerSec = 0.0
+    $keyReqCount = 0         # keyframe requests from the relay this second
+    $keyReqPerSec = 0.0
+    $sendStartedAt = 0
+    $lastSendMs = -1.0       # how long the last frame's SendAsync took to complete
 
     $recvTask = $null
     $shouldClose = $false
@@ -1085,6 +1222,7 @@ while ($true) {
       $drained = 0
       $pendingRelDx = 0
       $pendingRelDy = 0
+      $loopCount++
 
       while ($drained -lt 80) {
         if ($null -eq $recvTask) {
@@ -1132,6 +1270,7 @@ while ($true) {
             $script:streamer.Paused = ($controllers -le 0)
             if ($controllers -gt 0) { $script:streamer.RequestKeyframe() }
           } elseif ($msg.event -eq 'host:keyframe_request') {
+            $keyReqCount++
             $script:streamer.RequestKeyframe()
           } elseif ($msg.event -eq 'host:frame_ack') {
             if ($null -ne $msg.payload.seq) {
@@ -1221,6 +1360,7 @@ while ($true) {
       if ($null -ne $script:sendTask -and $script:sendTask.IsCompleted) {
         $done = $script:sendTask
         $script:sendTask = $null
+        $lastSendMs = $clock.ElapsedMilliseconds - $sendStartedAt
         if ($done.IsFaulted) { throw $done.Exception.InnerException }
       }
 
@@ -1258,7 +1398,25 @@ while ($true) {
           }
           $stats.win = [Math]::Round($byteBudget / 1024)
           $stats.sfps = [Math]::Round($sentFps, 1)
+          # Diagnostics: where the time goes between capture and send.
+          $stats.sm = $frame.Scale
+          if ($frame.CapSmoothMs -gt 0) { $stats.caps = [Math]::Round($frame.CapSmoothMs, 1) }
+          if ($frame.CapCoarseMs -gt 0) { $stats.capc = [Math]::Round($frame.CapCoarseMs, 1) }
+          $stats.dif = [Math]::Round($frame.DiffMs, 1)
+          $stats.tick = [Math]::Round($frame.TickMs, 1)
+          $stats.cfps = [Math]::Round($frame.CapturesPerSec, 1)
+          $stats.pfps = [Math]::Round($frame.ProducedPerSec, 1)
+          $stats.same = [Math]::Round($frame.UnchangedPerSec, 1)
+          $stats.drop = [Math]::Round($frame.DroppedPerSec, 1)
+          $stats.rd = [Math]::Round($frame.RediffsPerSec, 1)
+          $stats.kf = [Math]::Round($frame.KeyframesPerSec, 1)
+          if ($frame.LastKeyReason) { $stats.kr = $frame.LastKeyReason }
+          $stats.age = [Math]::Round($frame.MailboxMs)
+          if ($lastSendMs -ge 0) { $stats.snd = [Math]::Round($lastSendMs) }
+          $stats.lps = [Math]::Round($loopsPerSec)
+          $stats.kreq = [Math]::Round($keyReqPerSec, 1)
           $sent = Start-FrameSend $ws $frame $frameSeq ([DeskBridgeWin32]::GetActiveWindowTitle()) $stats
+          $sendStartedAt = $nowMs
           $inFlight[$frameSeq] = $nowMs
           $inFlightSize[$frameSeq] = $sent
           $inFlightBytes += $sent
@@ -1271,6 +1429,10 @@ while ($true) {
         $instant = ($bytesWindow * 8.0) / ($nowMs - $rateWindowStart)
         $kbps = if ($kbps -le 0) { $instant } else { 0.6 * $kbps + 0.4 * $instant }
         $sentFps = ($framesWindow * 1000.0) / ($nowMs - $rateWindowStart)
+        $loopsPerSec = ($loopCount * 1000.0) / ($nowMs - $rateWindowStart)
+        $keyReqPerSec = ($keyReqCount * 1000.0) / ($nowMs - $rateWindowStart)
+        $loopCount = 0
+        $keyReqCount = 0
         $framesWindow = 0
         $bytesWindow = 0
         $rateWindowStart = $nowMs
@@ -1306,7 +1468,7 @@ export function generateBatchLauncher(scriptName = 'DeskBridge-Host.ps1'): strin
   return `@echo off
 title DeskBridge Windows Host Agent
 echo Starting DeskBridge Windows Host Agent...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0${scriptName}"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0${scriptName}" %*
 pause
 `;
 }

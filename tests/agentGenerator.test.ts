@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { generateNodeHostScript, generatePowerShellHostScript } from '../server/windowsAgentGenerator.js';
+import { generateBatchLauncher, generateNodeHostScript, generatePowerShellHostScript } from '../server/windowsAgentGenerator.js';
 
 const opts = {
   wsUrl: 'wss://relay.example/ws',
@@ -109,6 +109,47 @@ test('PowerShell agent: capture pipeline runs on a thread and sends tiled frames
   assert.doesNotMatch(ps1, /Capture-ScreenBinary|Update-CaptureConfig/);
   // Frame sends are asynchronous: no .Wait() on the binary send.
   assert.doesNotMatch(ps1, /WebSocketMessageType\]::Binary[^\n]*\.Wait\(\)/);
+});
+
+test('PowerShell agent: scale mode switches between HALFTONE and COLORONCOLOR', () => {
+  const ps1 = generatePowerShellHostScript(opts);
+  for (const needle of [
+    "[ValidateSet('auto', 'halftone', 'fast')]",
+    "[string]$ScaleMode = 'auto'",
+    "$script:streamer.ScaleMode = $(if ($ScaleMode -eq 'halftone') { 1 } elseif ($ScaleMode -eq 'fast') { 2 } else { 0 })",
+    'const int COLORONCOLOR = 3;',
+    'int mode = coarse ? COLORONCOLOR : HALFTONE;',
+    'SetStretchBltMode(memDC, mode);',
+    'CaptureFast(cur, coarse);',
+    // Diffs against a reference scaled differently are not motion (avoids flip-flopping).
+    'if (!motionChecked && referenceScale == scale) {',
+    'refScale = f.Scale;',
+    'outG.InterpolationMode = coarse ? InterpolationMode.NearestNeighbor : InterpolationMode.Bilinear;',
+  ]) {
+    assert.ok(ps1.includes(needle), `missing: ${needle}`);
+  }
+});
+
+test('PowerShell agent: reports capture-pipeline diagnostics in frame stats', () => {
+  const ps1 = generatePowerShellHostScript(opts);
+  for (const key of ['sm', 'dif', 'tick', 'cfps', 'pfps', 'same', 'drop', 'rd', 'kf', 'age', 'lps', 'kreq']) {
+    assert.match(ps1, new RegExp(`\\$stats\\.${key} = `), `missing stat: ${key}`);
+  }
+  for (const needle of [
+    'if ($frame.CapSmoothMs -gt 0) { $stats.caps =',
+    'if ($frame.CapCoarseMs -gt 0) { $stats.capc =',
+    'if ($frame.LastKeyReason) { $stats.kr = $frame.LastKeyReason }',
+    'if ($lastSendMs -ge 0) { $stats.snd = [Math]::Round($lastSendMs) }',
+    'f.MailboxMs = clock.ElapsedMilliseconds - f.ReadyAt;',
+    'if (nChanged * 2 > total) { key = true; keyReason = "big"; }',
+    '$keyReqCount++',
+  ]) {
+    assert.ok(ps1.includes(needle), `missing: ${needle}`);
+  }
+});
+
+test('batch launcher forwards its arguments to the PowerShell agent', () => {
+  assert.match(generateBatchLauncher(), /-File "%~dp0DeskBridge-Host\.ps1" %\*/);
 });
 
 test('PowerShell agent: SendInput keyboard and monitor switching are wired up', () => {

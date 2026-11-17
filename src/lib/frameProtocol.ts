@@ -46,6 +46,34 @@ export interface AgentFrameStats {
   cm?: string;
   /** Frames per second the agent actually sent (last second). */
   sfps?: number;
+
+  // ---- Diagnostics: where the time goes between capture and send ----
+  /** Downscaling used for this frame: 'ht' (HALFTONE), 'coc' (COLORONCOLOR), 'bil' / 'nn' (GDI+ fallback), 'none'. */
+  sm?: string;
+  /** Smoothed capture time with smooth (HALFTONE / bilinear) and coarse (COLORONCOLOR / nearest) scaling, ms. */
+  caps?: number;
+  capc?: number;
+  /** Tile diff time for this frame, ms (0 for keyframes, which skip the diff). */
+  dif?: number;
+  /** Smoothed capture-thread cycle (capture + diff + encode), ms. */
+  tick?: number;
+  /** Capture-thread rates over the last second: captures, frames produced, captures with no change, frames dropped (replaced before sending), re-diffs, keyframes. */
+  cfps?: number;
+  pfps?: number;
+  same?: number;
+  drop?: number;
+  rd?: number;
+  kf?: number;
+  /** Why the latest keyframe was sent: 'req' (requested), 'init' (no reference), 'big' (over half changed). */
+  kr?: string;
+  /** Time this frame waited in the mailbox before the sender took it, ms. */
+  age?: number;
+  /** How long the previous frame's send took to complete, ms. */
+  snd?: number;
+  /** Agent main-loop iterations per second. */
+  lps?: number;
+  /** Keyframe requests received from the relay per second. */
+  kreq?: number;
 }
 
 export interface FrameHeader {
