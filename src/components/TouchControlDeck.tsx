@@ -27,6 +27,7 @@ import { MobileAIDrawer } from './controlDeck/MobileAIDrawer';
 import { QUALITY_OPTIONS, QUALITY_PRESETS, type StreamQualityPreset } from './controlDeck/qualityPresets';
 import { StreamViewport } from './controlDeck/StreamViewport';
 import { TrackpadPanel, type PointerHandlers } from './controlDeck/TrackpadPanel';
+import { registerPointerDown } from '../lib/activePointers';
 
 interface TouchControlDeckProps {
   hosts: HostProfile[];
@@ -393,7 +394,15 @@ export function TouchControlDeck({
       return;
     }
     capturePointer(e);
-    directTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pointer = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, pointerType: e.pointerType, isPrimary: e.isPrimary };
+    if (registerPointerDown(directTouchesRef.current, pointer)) {
+      // A finger whose release we never saw was still counted: drop the gesture it left behind,
+      // or this one-finger touch would be treated as a pinch.
+      pinchRef.current = null;
+      directPointerRef.current = null;
+      panRef.current = null;
+      flushScroll();
+    }
 
     if (directTouchesRef.current.size === 2) {
       // Second finger: this is a pinch, not a tap or a scroll.
@@ -523,7 +532,14 @@ export function TouchControlDeck({
 
   const handleTrackpadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     capturePointer(e);
-    pointersMapRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // Drops fingers whose release was never seen; the one-finger branch below resets the rest.
+    registerPointerDown(pointersMapRef.current, {
+      pointerId: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      pointerType: e.pointerType,
+      isPrimary: e.isPrimary,
+    });
 
     if (pointersMapRef.current.size >= 2) {
       twoFingerTapRef.current = true;
@@ -583,6 +599,8 @@ export function TouchControlDeck({
   };
 
   const handleTrackpadPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Already handled (e.g. pointerup followed by pointercancel): don't re-run tap logic.
+    if (!pointersMapRef.current.has(e.pointerId)) return;
     pointersMapRef.current.delete(e.pointerId);
     flushMove();
     flushScroll();
@@ -723,6 +741,7 @@ export function TouchControlDeck({
     onPointerMove: handleDirectPointerMove,
     onPointerUp: handleDirectPointerUp,
     onPointerCancel: handleDirectPointerCancel,
+    onLostPointerCapture: handleDirectPointerCancel,
   };
 
   const sendClick = (button: 'left' | 'right') => onSendInput({ type: 'click', button }, activeHost.hostId, 'touch');
