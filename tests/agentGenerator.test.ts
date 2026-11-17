@@ -148,6 +148,25 @@ test('PowerShell agent: reports capture-pipeline diagnostics in frame stats', ()
   }
 });
 
+test('PowerShell agent: low-latency input path (no Nagle, capture wakes on input, coarse while interacting)', () => {
+  const ps1 = generatePowerShellHostScript(opts);
+  for (const needle of [
+    '[System.Net.ServicePointManager]::UseNagleAlgorithm = $false',
+    'readonly AutoResetEvent wake = new AutoResetEvent(false);',
+    'WakeAt(InputSettleMs);',
+    'public void RequestKeyframe() { lock (gate) { keyRequested++; WakeAt(0); } }',
+    'WaitForNextCapture(started);',
+    'wake.WaitOne((int)wait);',
+    'bool interactCoarse = nowMs < interacting && capSmoothMs > InteractCoarseAboveMs;',
+  ]) {
+    assert.ok(ps1.includes(needle), `missing: ${needle}`);
+  }
+  // Nagle must be off before the socket is created.
+  assert.ok(ps1.indexOf('UseNagleAlgorithm = $false') < ps1.indexOf('New-Object System.Net.WebSockets.ClientWebSocket'));
+  // The capture loop no longer sleeps blindly through input.
+  assert.doesNotMatch(ps1, /Thread\.Sleep\(\(int\)Math\.Max\(2, interval - spent\)\)/);
+});
+
 test('batch launcher forwards its arguments to the PowerShell agent', () => {
   assert.match(generateBatchLauncher(), /-File "%~dp0DeskBridge-Host\.ps1" %\*/);
 });

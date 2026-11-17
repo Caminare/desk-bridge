@@ -57,6 +57,11 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web.Extensions
 
+# Send small writes immediately. With Nagle on (the .NET Framework default), the tail of each
+# frame can wait for the previous packets to be acknowledged, adding tens of ms per frame.
+# Must be set before the first connection is made.
+[System.Net.ServicePointManager]::UseNagleAlgorithm = $false
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -355,6 +360,16 @@ public class DeskBridgeStreamer {
   int curStretchMode;
   int motionStreak;
   long coarseUntil;
+  // Auto also scales coarsely while you interact (any input in the last CoarseHoldMs): a click
+  // changes few tiles, but should not pay for HALFTONE on the whole screen before it shows up.
+  long interactUntil;
+  const double InteractCoarseAboveMs = 20;
+
+  // Capture scheduling: input and keyframe requests wake the capture thread early.
+  const int InputSettleMs = 15;
+  const int MinCaptureGapMs = 16;
+  readonly AutoResetEvent wake = new AutoResetEvent(false);
+  long wakeAt;
 
   // Diagnostics, capture thread only.
   long rateStart;
@@ -436,10 +451,27 @@ public class DeskBridgeStreamer {
     if (thread != null) thread.Join(2000);
   }
 
-  public void SetBounds(Rectangle b) { lock (gate) { bounds = b; configDirty = true; keyRequested++; } }
+  public void SetBounds(Rectangle b) { lock (gate) { bounds = b; configDirty = true; keyRequested++; WakeAt(0); } }
   public void SetQuality(int mw, int q) { lock (gate) { maxWidth = mw; quality = Clamp(q, 30, 95); configDirty = true; } }
-  public void RequestKeyframe() { lock (gate) { keyRequested++; } }
-  public void NotifyActivity() { lock (gate) { activeUntil = clock.ElapsedMilliseconds + 600; } }
+  public void RequestKeyframe() { lock (gate) { keyRequested++; WakeAt(0); } }
+
+  /// Called for every input event. Captures at the fast rate for a while, and soon after this
+  /// input (InputSettleMs, so the app has repainted) instead of at the end of the current sleep.
+  public void NotifyActivity() {
+    lock (gate) {
+      long now = clock.ElapsedMilliseconds;
+      activeUntil = now + 600;
+      interactUntil = now + CoarseHoldMs;
+      WakeAt(InputSettleMs);
+    }
+  }
+
+  // Caller holds gate. Never postpones an earlier pending wake-up.
+  void WakeAt(int delayMs) {
+    long at = clock.ElapsedMilliseconds + delayMs;
+    if (wakeAt == 0 || at < wakeAt) wakeAt = Math.Max(1, at);
+    wake.Set();
+  }
   public int CurrentQuality { get { lock (gate) { return quality; } } }
 
   /// Hands the freshest unsent frame to the sender. Its pixels become the diff reference.
@@ -471,8 +503,7 @@ public class DeskBridgeStreamer {
     }
     while (running) {
       long started = clock.ElapsedMilliseconds;
-      int interval;
-      lock (gate) { interval = started < activeUntil ? ActiveIntervalMs : IdleIntervalMs; }
+      lock (gate) { wakeAt = 0; }
       if (!Paused) {
         try {
           double t0 = clock.Elapsed.TotalMilliseconds;
@@ -489,8 +520,25 @@ public class DeskBridgeStreamer {
         rateStart = clock.ElapsedMilliseconds;
         nTicks = nProduced = nUnchanged = nDropped = nRediffs = nKeys = 0;
       }
-      long spent = clock.ElapsedMilliseconds - started;
-      Thread.Sleep((int)Math.Max(2, interval - spent));
+      WaitForNextCapture(started);
+    }
+  }
+
+  // Sleeps until the next capture is due: the regular interval, or sooner when input or a
+  // keyframe request woke us (wakeAt). Input used to only shorten the *next* sleep, so the
+  // first click after an idle moment could wait a whole idle interval before being captured.
+  void WaitForNextCapture(long started) {
+    while (running) {
+      long now = clock.ElapsedMilliseconds;
+      long due;
+      lock (gate) {
+        due = started + (now < activeUntil ? ActiveIntervalMs : IdleIntervalMs);
+        if (wakeAt > 0 && wakeAt < due) due = Math.Max(wakeAt, started + MinCaptureGapMs);
+      }
+      due = Math.Max(due, started + 2);
+      long wait = due - now;
+      if (wait <= 0) return;
+      wake.WaitOne((int)wait);
     }
   }
 
@@ -736,7 +784,12 @@ public class DeskBridgeStreamer {
     if (dirty || !configured) Configure(b, mw, q);
 
     int scaleMode = ScaleMode;
-    bool coarse = scaleMode == 2 || (scaleMode == 0 && clock.ElapsedMilliseconds < coarseUntil);
+    long nowMs = clock.ElapsedMilliseconds;
+    long interacting;
+    lock (gate) { interacting = interactUntil; }
+    // Interaction only goes coarse where HALFTONE is measurably slow on this PC.
+    bool interactCoarse = nowMs < interacting && capSmoothMs > InteractCoarseAboveMs;
+    bool coarse = scaleMode == 2 || (scaleMode == 0 && (nowMs < coarseUntil || interactCoarse));
     bool scaled = outW != curBounds.Width || outH != curBounds.Height;
     string scale = !scaled ? "none" : fastActive ? (coarse ? "coc" : "ht") : (coarse ? "nn" : "bil");
 
