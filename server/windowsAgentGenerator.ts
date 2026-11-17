@@ -72,6 +72,35 @@ public static class DeskBridgeWin32 {
   [DllImport("user32.dll")]
   public static extern bool SetProcessDPIAware();
 
+  [DllImport("user32.dll", SetLastError = true)]
+  static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
+  [DllImport("user32.dll")]
+  static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+
+  // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+  static readonly IntPtr PerMonitorAwareV2 = new IntPtr(-4);
+
+  /// Report real pixels on every monitor, even when monitors use different scaling (125%, 150%...).
+  /// With only system DPI awareness, a monitor whose scale differs from the primary is reported
+  /// with scaled bounds, so captures come out cropped or as a "miniature" with empty space.
+  /// Returns the mode that took effect: process-pmv2, thread-pmv2 or system.
+  public static string EnablePerMonitorDpi() {
+    try {
+      if (SetProcessDpiAwarenessContext(PerMonitorAwareV2)) return "process-pmv2";
+    } catch (EntryPointNotFoundException) {
+      // Windows older than 10 1703.
+    }
+    try {
+      // Process awareness may already be fixed (e.g. by the host's manifest): set it for this thread.
+      if (SetThreadDpiAwarenessContext(PerMonitorAwareV2) != IntPtr.Zero) return "thread-pmv2";
+    } catch (EntryPointNotFoundException) {
+      // Windows older than 10 1607.
+    }
+    SetProcessDPIAware();
+    return "system";
+  }
+
   [DllImport("user32.dll")]
   public static extern IntPtr GetForegroundWindow();
 
@@ -381,7 +410,16 @@ public class DeskBridgeStreamer {
     }
   }
 
+  [DllImport("user32.dll")]
+  static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+
   void Run() {
+    // Capture in real pixels on every monitor (see DeskBridgeWin32.EnablePerMonitorDpi).
+    try {
+      SetThreadDpiAwarenessContext(new IntPtr(-4));
+    } catch (EntryPointNotFoundException) {
+      // Older Windows: keep the process default.
+    }
     while (running) {
       long started = clock.ElapsedMilliseconds;
       int interval;
@@ -730,7 +768,8 @@ public class DeskBridgeStreamer {
 }
 "@
 
-[DeskBridgeWin32]::SetProcessDPIAware() | Out-Null
+# Must run before the first [System.Windows.Forms.Screen] call, which caches monitor bounds.
+$script:DpiMode = [DeskBridgeWin32]::EnablePerMonitorDpi()
 
 $jsonSerializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 $jsonSerializer.MaxJsonLength = 10485760
@@ -986,6 +1025,8 @@ Write-Host "=====================================================" -ForegroundCo
 Write-Host "  DeskBridge Windows Host Agent" -ForegroundColor White
 Write-Host "  Workstation: $HostName ($GroupLabel)" -ForegroundColor Gray
 Write-Host "  Resolution : \${screenW}x\${screenH}" -ForegroundColor Gray
+Write-Host "  Monitors   : $((Get-MonitorList | ForEach-Object { '{0}x{1}{2}' -f $_.width, $_.height, $(if ($_.primary) { ' (main)' } else { '' }) }) -join ', ')" -ForegroundColor Gray
+Write-Host "  DPI mode   : $script:DpiMode" -ForegroundColor Gray
 Write-Host "=====================================================" -ForegroundColor Cyan
 
 while ($true) {
