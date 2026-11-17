@@ -14,14 +14,18 @@ const SCROLL_FLUSH_MS = 24;
 const MIN_SCROLL_DELTA = 0.15;
 
 /**
- * Batches high-frequency relative mouse moves and scroll deltas so the relay and
- * host see a steady ~60Hz stream instead of one message per pointer event.
+ * Batches high-frequency relative mouse moves, absolute cursor positions (a hovering mouse)
+ * and scroll deltas so the relay and host see a steady ~60Hz stream instead of one message
+ * per pointer event.
  */
 export function useCoalescedPointerInput(onSendInput: SendInput) {
   const pendingMoveRef = useRef<Pending>({ dx: 0, dy: 0, hostId: null });
   const moveTimerRef = useRef<number | null>(null);
   const pendingScrollRef = useRef<Pending>({ dx: 0, dy: 0, hostId: null });
   const scrollTimerRef = useRef<number | null>(null);
+  // Absolute cursor position (a hovering mouse): only the latest position matters.
+  const pendingMoveToRef = useRef<{ nx: number; ny: number; hostId: string } | null>(null);
+  const moveToTimerRef = useRef<number | null>(null);
 
   const flushMove = useCallback(() => {
     if (moveTimerRef.current !== null) {
@@ -53,6 +57,39 @@ export function useCoalescedPointerInput(onSendInput: SendInput) {
     }
   }, [onSendInput]);
 
+  const flushMoveTo = useCallback(() => {
+    if (moveToTimerRef.current !== null) {
+      window.clearTimeout(moveToTimerRef.current);
+      moveToTimerRef.current = null;
+    }
+    const pending = pendingMoveToRef.current;
+    if (!pending) return;
+    pendingMoveToRef.current = null;
+    onSendInput({ type: 'mousemove', x: pending.nx, y: pending.ny, relative: false }, pending.hostId, 'touch');
+  }, [onSendInput]);
+
+  /** Moves the remote cursor to normalized (0..1) coordinates, at most once per MOVE_FLUSH_MS. */
+  const queueMoveTo = useCallback(
+    (nx: number, ny: number, hostId: string) => {
+      const last = pendingMoveToRef.current;
+      if (last && last.hostId === hostId && last.nx === nx && last.ny === ny) return;
+      pendingMoveToRef.current = { nx, ny, hostId };
+      if (moveToTimerRef.current === null) {
+        moveToTimerRef.current = window.setTimeout(flushMoveTo, MOVE_FLUSH_MS);
+      }
+    },
+    [flushMoveTo],
+  );
+
+  /** Drops a pending absolute move (e.g. a click at the same spot is about to be sent). */
+  const cancelMoveTo = useCallback(() => {
+    if (moveToTimerRef.current !== null) {
+      window.clearTimeout(moveToTimerRef.current);
+      moveToTimerRef.current = null;
+    }
+    pendingMoveToRef.current = null;
+  }, []);
+
   const queueMove = useCallback(
     (dx: number, dy: number, hostId: string) => {
       if (dx === 0 && dy === 0) return;
@@ -82,9 +119,10 @@ export function useCoalescedPointerInput(onSendInput: SendInput) {
     () => () => {
       if (moveTimerRef.current !== null) window.clearTimeout(moveTimerRef.current);
       if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
+      if (moveToTimerRef.current !== null) window.clearTimeout(moveToTimerRef.current);
     },
     [],
   );
 
-  return { queueMove, flushMove, queueScroll, flushScroll };
+  return { queueMove, flushMove, queueMoveTo, flushMoveTo, cancelMoveTo, queueScroll, flushScroll };
 }

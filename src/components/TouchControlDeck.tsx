@@ -104,7 +104,7 @@ export function TouchControlDeck({
     scrollCursorMoved: boolean;
   } | null>(null);
 
-  const { queueMove, flushMove, queueScroll, flushScroll } = useCoalescedPointerInput(onSendInput);
+  const { queueMove, flushMove, queueMoveTo, cancelMoveTo, queueScroll, flushScroll } = useCoalescedPointerInput(onSendInput);
 
   // Lock body scroll while fullscreen overlay is active (prevents iPad/iPhone Safari page bounce)
   useEffect(() => {
@@ -385,6 +385,8 @@ export function TouchControlDeck({
   };
 
   const handleDirectPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Clicks carry their own coordinates; a hover move still queued would only arrive late.
+    if (e.pointerType === 'mouse') cancelMoveTo();
     if (e.pointerType === 'mouse' && e.button === 2) {
       const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
       onSendInput({ type: 'click', button: 'right', x: nx, y: ny }, activeHost.hostId, 'touch');
@@ -419,6 +421,13 @@ export function TouchControlDeck({
   };
 
   const handleDirectPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    // A connected mouse moving with no button pressed: the remote cursor follows it, so hover
+    // effects and tooltips work and the cursor is where the next click will land.
+    if (e.pointerType === 'mouse' && e.buttons === 0 && !directPointerRef.current) {
+      const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
+      queueMoveTo(nx, ny, activeHost.hostId);
+      return;
+    }
     if (directTouchesRef.current.has(e.pointerId)) {
       directTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
