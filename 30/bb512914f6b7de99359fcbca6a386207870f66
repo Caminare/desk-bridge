@@ -1,0 +1,42 @@
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/SizingMergingPolicyTests.cs
+  9c3c5ef0e7c9853d 1-97
+agent/windows/src/DeskBridge.Agent.Core/Streaming/FrameMailbox.cs
+  9c3c5ef0e7c9853d 1-94
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/PipelineTests.cs
+  9c3c5ef0e7c9853d 1-262
+agent/windows/src/DeskBridge.Agent.Core/Streaming/Abstractions.cs
+  9c3c5ef0e7c9853d 1-66
+agent/windows/src/DeskBridge.Agent.Core/Streaming/SendWindow.cs
+  9c3c5ef0e7c9853d 1-115
+agent/windows/src/DeskBridge.Agent.Core/Streaming/TileDiffer.cs
+  9c3c5ef0e7c9853d 1-261
+agent/windows/src/DeskBridge.Agent.Core/Streaming/FrameAssembler.cs
+  9c3c5ef0e7c9853d 1-168
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/TileDifferTests.cs
+  9c3c5ef0e7c9853d 1-187
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/SendWindowSchedulerTests.cs
+  9c3c5ef0e7c9853d 1-274
+agent/windows/src/DeskBridge.Agent.Core/Streaming/StatsCollector.cs
+  9c3c5ef0e7c9853d 1-127
+agent/windows/src/DeskBridge.Agent.Core/Streaming/CaptureScheduler.cs
+  9c3c5ef0e7c9853d 1-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "30bb512914f6b7de99359fcbca6a386207870f66",
+  "prompts": {
+    "9c3c5ef0e7c9853d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a5ba8fa-69e7-4086-b0b0-2378380b565a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 5396,
+      "overriden_lines": 0
+    }
+  }
+}
