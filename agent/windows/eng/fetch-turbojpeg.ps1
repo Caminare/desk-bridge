@@ -1,11 +1,15 @@
 <#
 .SYNOPSIS
-  Fetches turbojpeg.dll (libjpeg-turbo 3.2.1, VC x64 build) into third_party/libjpeg-turbo/.
+  Refreshes the vendored turbojpeg.dll (libjpeg-turbo, VC x64 build) in third_party/libjpeg-turbo/.
 
 .DESCRIPTION
+  The DLL is committed to the repo; builds and CI do not run this script. Use it only to upgrade
+  libjpeg-turbo: bump $Version and $Sha256 (the release installer's SHA-256), run it, update the version
+  in third_party/libjpeg-turbo/README.md, and commit the result.
+
   Downloads the pinned official release installer into a fresh temp directory, verifies its SHA-256,
-  and extracts it with 7z. The installer is NEVER executed. Requires 7z (7-Zip) on PATH or in
-  %ProgramFiles%\7-Zip; GitHub's windows-latest runners have it.
+  and extracts it with 7z. The installer is NEVER executed. Writes turbojpeg.dll, its license files and
+  turbojpeg.dll.sha256 (checked by CI). Requires 7z (7-Zip) on PATH or in %ProgramFiles%\7-Zip.
 #>
 [CmdletBinding()]
 param(
@@ -52,7 +56,11 @@ try {
     if (-not $dll) { throw "turbojpeg.dll is not in $Asset." }
 
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-    Copy-Item -Path $dll.FullName -Destination (Join-Path $Destination 'turbojpeg.dll') -Force
+    $target = Join-Path $Destination 'turbojpeg.dll'
+    Copy-Item -Path $dll.FullName -Destination $target -Force
+    $dllHash = (Get-FileHash -Algorithm SHA256 -Path $target).Hash.ToLowerInvariant()
+    # sha256sum format, so CI (and sha256sum -c) can verify the committed DLL.
+    Set-Content -Path (Join-Path $Destination 'turbojpeg.dll.sha256') -Value "$dllHash  turbojpeg.dll" -NoNewline -Encoding ascii
 
     foreach ($name in 'LICENSE.md', 'README.ijg') {
         $lic = Get-ChildItem -Path $extracted -Recurse -Filter $name -File | Select-Object -First 1

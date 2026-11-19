@@ -1,22 +1,9 @@
 using System.Buffers;
-using System.Runtime.InteropServices;
 using DeskBridge.Agent.Core.Streaming;
 using DeskBridge.Agent.Windows.Encoding;
 using Xunit;
 
 namespace DeskBridge.Agent.Windows.Tests.Encoding;
-
-/// <summary>Skipped unless turbojpeg.dll can be loaded (run eng/fetch-turbojpeg.ps1 to fetch it).</summary>
-public sealed class TurboJpegFactAttribute : FactAttribute
-{
-    public TurboJpegFactAttribute()
-    {
-        if (NativeLibrary.TryLoad("turbojpeg", typeof(TurboJpegTileEncoder).Assembly, null, out nint h))
-            NativeLibrary.Free(h);
-        else
-            Skip = "turbojpeg.dll not found; run agent/windows/eng/fetch-turbojpeg.ps1 (needs 7z).";
-    }
-}
 
 public class TurboJpegTileEncoderTests
 {
@@ -45,7 +32,7 @@ public class TurboJpegTileEncoderTests
         Assert.Equal(0xD9, jpeg[^1]);
     }
 
-    [TurboJpegFact]
+    [Fact]
     public void Encodes_a_tile_as_a_jpeg_for_both_subsamplings()
     {
         using var encoder = new TurboJpegTileEncoder();
@@ -61,7 +48,7 @@ public class TurboJpegTileEncoderTests
         }
     }
 
-    [TurboJpegFact]
+    [Fact]
     public void Rect_offset_selects_the_right_pixels_and_output_is_appended()
     {
         using var encoder = new TurboJpegTileEncoder();
@@ -79,7 +66,7 @@ public class TurboJpegTileEncoderTests
         Assert.False(a.AsSpan().SequenceEqual(b), "red and blue tiles must not encode identically");
     }
 
-    [TurboJpegFact]
+    [Fact]
     public void Same_input_encodes_to_the_same_bytes_and_higher_quality_is_larger()
     {
         using var encoder = new TurboJpegTileEncoder();
@@ -100,7 +87,7 @@ public class TurboJpegTileEncoderTests
         Assert.True(low.WrittenCount < w1.WrittenCount);
     }
 
-    [TurboJpegFact]
+    [Fact]
     public void Rejects_a_rect_outside_the_image()
     {
         using var encoder = new TurboJpegTileEncoder();

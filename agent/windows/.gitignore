@@ -4,5 +4,3 @@ obj/
 .vs/
 TestResults/
 artifacts/
-# Fetched by eng/fetch-turbojpeg.ps1, never committed.
-third_party/

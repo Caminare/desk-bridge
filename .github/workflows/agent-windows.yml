@@ -45,8 +45,10 @@ jobs:
         with:
           global-json-file: agent/windows/global.json
 
-      - name: Fetch libjpeg-turbo
-        run: ./eng/fetch-turbojpeg.ps1
+      - name: Verify vendored libjpeg-turbo
+        shell: bash
+        working-directory: agent/windows/third_party/libjpeg-turbo
+        run: sha256sum -c turbojpeg.dll.sha256
 
       - run: dotnet test DeskBridge.Agent.sln -c Release
 

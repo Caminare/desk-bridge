@@ -10,8 +10,9 @@
     <InternalsVisibleTo Include="DeskBridge.Agent.Windows.Tests" />
   </ItemGroup>
 
-  <!-- Copied next to build output (tests, dev runs) when fetched by eng/fetch-turbojpeg; publish bundling is done by the App project. -->
-  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)../../third_party/libjpeg-turbo/turbojpeg.dll')">
+  <!-- Vendored libjpeg-turbo (see third_party/libjpeg-turbo/README.md). Copied next to build output for tests and dev runs;
+       publish bundling is done by the App project. A missing DLL fails the build on purpose. -->
+  <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)../../third_party/libjpeg-turbo/turbojpeg.dll" Link="turbojpeg.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
   </ItemGroup>
 

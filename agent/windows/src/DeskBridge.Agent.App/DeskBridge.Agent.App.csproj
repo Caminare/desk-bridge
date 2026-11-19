@@ -19,8 +19,7 @@
   </ItemGroup>
 
   <!-- Bundle the TurboJPEG native DLL into the single-file exe (IncludeNativeLibrariesForSelfExtract). -->
-  <Target Name="IncludeTurboJpegInPublish" BeforeTargets="ComputeResolvedFilesToPublishList"
-          Condition="Exists('$(MSBuildThisFileDirectory)../../third_party/libjpeg-turbo/turbojpeg.dll')">
+  <Target Name="IncludeTurboJpegInPublish" BeforeTargets="ComputeResolvedFilesToPublishList">
     <ItemGroup>
       <ResolvedFileToPublish Include="$(MSBuildThisFileDirectory)../../third_party/libjpeg-turbo/turbojpeg.dll">
         <RelativePath>turbojpeg.dll</RelativePath>
