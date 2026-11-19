@@ -1,0 +1,46 @@
+agent/windows/src/DeskBridge.Agent.Windows/Input/InputWorker.cs
+  9c3c5ef0e7c9853d 1-94
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Input/InputWorkerTests.cs
+  9c3c5ef0e7c9853d 1-169
+agent/windows/src/DeskBridge.Agent.Windows/Input/InputCoalescer.cs
+  9c3c5ef0e7c9853d 1-33
+agent/windows/src/DeskBridge.Agent.Core/Input/InputCommands.cs
+  9c3c5ef0e7c9853d 1-40
+agent/windows/src/DeskBridge.Agent.Windows/Input/InputInjector.cs
+  9c3c5ef0e7c9853d 1-226
+agent/windows/src/DeskBridge.Agent.Windows/Input/IInputInjector.cs
+  9c3c5ef0e7c9853d 1-9
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Input/VirtualKeysTests.cs
+  9c3c5ef0e7c9853d 1-104
+agent/windows/src/DeskBridge.Agent.Core/Input/InputParser.cs
+  9c3c5ef0e7c9853d 1-247
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Input/InputCoalescerTests.cs
+  9c3c5ef0e7c9853d 1-60
+agent/windows/src/DeskBridge.Agent.Windows/Input/InputMath.cs
+  9c3c5ef0e7c9853d 1-117
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Input/InputMathTests.cs
+  9c3c5ef0e7c9853d 1-159
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Input/InputParserTests.cs
+  9c3c5ef0e7c9853d 1-207
+agent/windows/src/DeskBridge.Agent.Core/Input/VirtualKeys.cs
+  9c3c5ef0e7c9853d 1-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b422574774c0275602866c33c152e6877752b625",
+  "prompts": {
+    "9c3c5ef0e7c9853d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a5ba8fa-69e7-4086-b0b0-2378380b565a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 2299,
+      "overriden_lines": 0
+    }
+  }
+}
