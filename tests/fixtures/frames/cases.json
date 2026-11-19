@@ -1,0 +1,361 @@
+{
+  "cases": [
+    {
+      "name": "v1_full_frame",
+      "expect": "accept",
+      "version": 1,
+      "header": {
+        "hostId": "host-1",
+        "seq": 1,
+        "activeWindow": "Notepad",
+        "timestamp": 1700000000000
+      },
+      "payload": "ffd80f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd04ffd9",
+      "file": "v1_full_frame.bin"
+    },
+    {
+      "name": "v1_empty_header",
+      "expect": "accept",
+      "version": 1,
+      "header": {},
+      "payload": "ffd810171e252c333a41ffd9",
+      "file": "v1_empty_header.bin"
+    },
+    {
+      "name": "v2_keyframe_single_tile",
+      "expect": "accept",
+      "version": 2,
+      "header": {
+        "hostId": "host-1",
+        "seq": 2,
+        "activeWindow": "Desktop",
+        "timestamp": 1700000000033,
+        "w": 128,
+        "h": 96,
+        "key": true
+      },
+      "tiles": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 128,
+          "h": 96,
+          "data": "ffd811181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeffd9"
+        }
+      ],
+      "file": "v2_keyframe_single_tile.bin"
+    },
+    {
+      "name": "v2_delta_multi_tile",
+      "expect": "accept",
+      "version": 2,
+      "header": {
+        "hostId": "host-1",
+        "seq": 3,
+        "timestamp": 1700000000066,
+        "w": 1600,
+        "h": 900,
+        "key": false
+      },
+      "tiles": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "data": "ffd8121920272e353c434a51585f666d747bffd9"
+        },
+        {
+          "x": 64,
+          "y": 0,
+          "w": 128,
+          "h": 64,
+          "data": "ffd8131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7ffd9"
+        },
+        {
+          "x": 1536,
+          "y": 836,
+          "w": 64,
+          "h": 64,
+          "data": "ffd8141b222930373e454c535a61686fffd9"
+        }
+      ],
+      "file": "v2_delta_multi_tile.bin"
+    },
+    {
+      "name": "v2_delta_no_tiles",
+      "expect": "accept",
+      "version": 2,
+      "header": {
+        "hostId": "host-1",
+        "seq": 4,
+        "w": 640,
+        "h": 360,
+        "key": false
+      },
+      "tiles": [],
+      "file": "v2_delta_no_tiles.bin"
+    },
+    {
+      "name": "v2_full_stats",
+      "expect": "accept",
+      "version": 2,
+      "header": {
+        "hostId": "host-1",
+        "seq": 5,
+        "activeWindow": "Visual Studio Code",
+        "timestamp": 1700000000099,
+        "w": 1600,
+        "h": 900,
+        "key": false,
+        "stats": {
+          "cap": 12.5,
+          "enc": 3.25,
+          "rtt": 48,
+          "kbps": 8123.75,
+          "q": 80,
+          "mw": 1600,
+          "ch": 7,
+          "tt": 225,
+          "inf": 3,
+          "brtt": 31.5,
+          "win": 256,
+          "cm": "fast",
+          "sfps": 29.5,
+          "sm": "ht",
+          "caps": 14.125,
+          "capc": 6.5,
+          "dif": 0.333,
+          "tick": 22.75,
+          "cfps": 30,
+          "pfps": 28,
+          "same": 2,
+          "drop": 1,
+          "rd": 0,
+          "kf": 1,
+          "kr": "req",
+          "age": 0.5,
+          "snd": 17.1,
+          "lps": 240,
+          "kreq": 0
+        }
+      },
+      "tiles": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "data": "ffd8151c232a31383f464d545b626970777e858c939affd9"
+        }
+      ],
+      "file": "v2_full_stats.bin"
+    },
+    {
+      "name": "v2_unicode_and_escapes",
+      "expect": "accept",
+      "version": 2,
+      "header": {
+        "hostId": "host-ç",
+        "seq": 6,
+        "activeWindow": "Relatório – Configurações ☺ 😀 ‮ \"aspas\" \\ barra\n<tab>\t& \u0001\u001f    'x'",
+        "timestamp": 1700000000132,
+        "w": 64,
+        "h": 64,
+        "key": true
+      },
+      "tiles": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "data": "ffd8161d242b323940474e555c63ffd9"
+        }
+      ],
+      "file": "v2_unicode_and_escapes.bin"
+    },
+    {
+      "name": "v2_number_formatting",
+      "expect": "accept",
+      "version": 2,
+      "header": {
+        "seq": 123456789,
+        "timestamp": 1700000000000,
+        "w": 64,
+        "h": 64,
+        "key": false,
+        "stats": {
+          "cap": 1e-7,
+          "enc": 0.000001,
+          "rtt": 1e+21,
+          "kbps": 123456789012345680000,
+          "q": -0.5,
+          "mw": 1.5e+300,
+          "ch": 5e-324,
+          "tt": 0.1,
+          "inf": 100,
+          "brtt": 1234.5678,
+          "win": 0.30000000000000004,
+          "sfps": 1000000000000000,
+          "caps": 999999999999999.9,
+          "capc": 4.35
+        }
+      },
+      "tiles": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64,
+          "data": "ffd8171e252cffd9"
+        }
+      ],
+      "file": "v2_number_formatting.bin"
+    },
+    {
+      "name": "bad_magic",
+      "expect": "reject",
+      "reason": "byte 0 is not 0x44",
+      "bytes": "4501000001"
+    },
+    {
+      "name": "bad_version",
+      "expect": "reject",
+      "reason": "version byte is neither 1 nor 2",
+      "bytes": "4409000001"
+    },
+    {
+      "name": "too_short",
+      "expect": "reject",
+      "reason": "fewer than 5 bytes",
+      "bytes": "44010000"
+    },
+    {
+      "name": "header_past_buffer",
+      "expect": "reject",
+      "reason": "declared header length exceeds the buffer",
+      "bytes": "4401003201"
+    },
+    {
+      "name": "header_bad_json",
+      "expect": "reject",
+      "reason": "header is not valid JSON",
+      "bytes": "440200057b6e6f7065ffd8181f262d343bffd9"
+    },
+    {
+      "name": "header_empty",
+      "expect": "reject",
+      "reason": "zero-length header",
+      "bytes": "44010000ffd8181f262d343bffd9"
+    },
+    {
+      "name": "header_null",
+      "expect": "reject",
+      "reason": "header JSON is null",
+      "bytes": "440100046e756c6cffd8181f262d343bffd9"
+    },
+    {
+      "name": "v1_empty_payload",
+      "expect": "reject",
+      "reason": "v1 frame without a JPEG",
+      "bytes": "4401000e7b22686f73744964223a2261227d"
+    },
+    {
+      "name": "v2_w_zero",
+      "expect": "reject",
+      "reason": "w must be >= 1",
+      "bytes": "4402002e7b2277223a302c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_w_fractional",
+      "expect": "reject",
+      "reason": "w must be an integer",
+      "bytes": "440200317b2277223a36342e352c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_h_too_large",
+      "expect": "reject",
+      "reason": "h must be <= 16384",
+      "bytes": "440200327b2277223a3132382c2268223a31363338352c226b6579223a66616c73652c2272223a5b302c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_h_missing",
+      "expect": "reject",
+      "reason": "h is absent",
+      "bytes": "440200287b2277223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_r_missing",
+      "expect": "reject",
+      "reason": "r is absent",
+      "bytes": "4402001d7b2277223a3132382c2268223a3132382c226b6579223a66616c73657dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_r_not_array",
+      "expect": "reject",
+      "reason": "r is not an array",
+      "bytes": "440200287b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a226e6f7065227dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_r_not_multiple_of_5",
+      "expect": "reject",
+      "reason": "r length is not a multiple of 5",
+      "bytes": "4402002d7b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36345d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_tile_fractional",
+      "expect": "reject",
+      "reason": "tile x is not an integer",
+      "bytes": "440200327b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b302e352c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_tile_negative_x",
+      "expect": "reject",
+      "reason": "tile x < 0",
+      "bytes": "440200317b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b2d312c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_tile_zero_width",
+      "expect": "reject",
+      "reason": "tile w <= 0",
+      "bytes": "4402002f7b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c302c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_tile_out_of_bounds",
+      "expect": "reject",
+      "reason": "tile x + w > frame w",
+      "bytes": "440200327b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b3130302c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_tile_zero_length",
+      "expect": "reject",
+      "reason": "tile len <= 0",
+      "bytes": "4402002f7b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36342c305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_tile_length_overflow",
+      "expect": "reject",
+      "reason": "tile len runs past the buffer",
+      "bytes": "440200307b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36342c31315d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_truncated_payload",
+      "expect": "reject",
+      "reason": "payload shorter than the sum of tile lengths",
+      "bytes": "4402003e7b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36342c31302c36342c302c36342c36342c31305d7dffd8181f262d343bffd9"
+    },
+    {
+      "name": "v2_trailing_bytes",
+      "expect": "reject",
+      "reason": "payload longer than the sum of tile lengths",
+      "bytes": "440200307b2277223a3132382c2268223a3132382c226b6579223a66616c73652c2272223a5b302c302c36342c36342c31305d7dffd81920272e353c43ffd9"
+    },
+    {
+      "name": "v2_keyframe_without_tiles",
+      "expect": "reject",
+      "reason": "key=true with zero tiles",
+      "bytes": "440200237b2277223a3132382c2268223a3132382c226b6579223a747275652c2272223a5b5d7d"
+    }
+  ]
+}
