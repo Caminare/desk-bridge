@@ -1,0 +1,54 @@
+agent/windows/eng/fetch-turbojpeg.sh
+  9c3c5ef0e7c9853d 1-48
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Capture/RectScalerTests.cs
+  9c3c5ef0e7c9853d 1-61
+agent/windows/eng/fetch-turbojpeg.ps1
+  9c3c5ef0e7c9853d 1-66
+agent/windows/src/DeskBridge.Agent.Windows/Capture/DxgiFrameSource.cs
+  9c3c5ef0e7c9853d 1-412
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Capture/CursorBlenderTests.cs
+  9c3c5ef0e7c9853d 1-141
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Capture/FrameSourceTests.cs
+  9c3c5ef0e7c9853d 1-100
+agent/windows/src/DeskBridge.Agent.Windows/Encoding/TurboJpegTileEncoder.cs
+  9c3c5ef0e7c9853d 1-71
+agent/windows/src/DeskBridge.Agent.Windows/Capture/RectScaler.cs
+  9c3c5ef0e7c9853d 1-48
+  9c3c5ef0e7c9853d 49-50
+agent/windows/src/DeskBridge.Agent.Windows/Capture/GdiFrameSource.cs
+  9c3c5ef0e7c9853d 1-150,156,160,164,169,172,181
+  9c3c5ef0e7c9853d 151-155
+  9c3c5ef0e7c9853d 157-159
+  9c3c5ef0e7c9853d 161-163
+  9c3c5ef0e7c9853d 165-168
+  9c3c5ef0e7c9853d 170-171
+  9c3c5ef0e7c9853d 173-175,178-180
+  9c3c5ef0e7c9853d 182
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Encoding/TurboJpegTileEncoderTests.cs
+  9c3c5ef0e7c9853d 1-112
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Capture/DesktopFactAttribute.cs
+  9c3c5ef0e7c9853d 1-44
+agent/windows/src/DeskBridge.Agent.Windows/Encoding/TurboJpegNative.cs
+  9c3c5ef0e7c9853d 1-47
+agent/windows/src/DeskBridge.Agent.Windows/Capture/CursorBlender.cs
+  9c3c5ef0e7c9853d 1-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8df39aeb7487a174b854a24b87ad6708584c99c9",
+  "prompts": {
+    "9c3c5ef0e7c9853d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a5ba8fa-69e7-4086-b0b0-2378380b565a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 3669,
+      "overriden_lines": 0
+    }
+  }
+}
