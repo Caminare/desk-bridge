@@ -1,0 +1,35 @@
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/DirtyTrackerTests.cs
+  9c3c5ef0e7c9853d 1-84
+agent/windows/src/DeskBridge.Agent.Core/Streaming/StreamingEngine.cs
+  9c3c5ef0e7c9853d 1-349
+agent/windows/src/DeskBridge.Agent.Core/Streaming/DirtyTracker.cs
+  9c3c5ef0e7c9853d 1-65
+agent/windows/src/DeskBridge.Agent.Windows/Host/DpapiHostSecretStore.cs
+  9c3c5ef0e7c9853d 1-45
+agent/windows/src/DeskBridge.Agent.App/Program.cs
+  9c3c5ef0e7c9853d 2-141
+  9c3c5ef0e7c9853d 1
+agent/windows/src/DeskBridge.Agent.Windows/Host/DpiAwareness.cs
+  9c3c5ef0e7c9853d 1-18
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Host/DpapiHostSecretStoreTests.cs
+  9c3c5ef0e7c9853d 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4b9c0e7092af8684de76e375e8e50dae6af02f2c",
+  "prompts": {
+    "9c3c5ef0e7c9853d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a5ba8fa-69e7-4086-b0b0-2378380b565a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 734,
+      "overriden_lines": 0
+    }
+  }
+}
