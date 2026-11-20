@@ -15,6 +15,7 @@ DpiAwareness.EnablePerMonitorV2();
 string version = Assembly.GetExecutingAssembly()
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
 Log($"DeskBridge agent {version}");
+if (!PowerThrottling.OptOutOfExecutionSpeedThrottling()) Log("Could not opt out of power throttling; encoding may be slow.");
 
 // One agent per Windows user: a second one would fight over the host id, and --reenroll from a
 // second process would rotate the secret out from under the running one.
