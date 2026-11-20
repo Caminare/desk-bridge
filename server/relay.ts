@@ -18,6 +18,7 @@ import {
 } from './aiAssistant.js';
 import { SlidingWindowLimiter } from './rateLimit.js';
 import { AdaptiveQuality } from './adaptiveStream.js';
+import { EnrollmentCodes } from './enrollmentCodes.js';
 import { parseFrame, rewriteFrameHeader } from '../src/lib/frameProtocol.js';
 import {
   LoginRateLimiter,
@@ -147,6 +148,9 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
 
   const auth = loadAuthConfig(AUTH_STORE_PATH, opts.accessToken);
   const loginLimiter = new LoginRateLimiter();
+  // Separate from login so a PC guessing codes cannot lock the owner out.
+  const enrollLimiter = new LoginRateLimiter();
+  const enrollCodes = new EnrollmentCodes();
   const HEARTBEAT_MS = opts.heartbeatMs ?? 15000;
   const aiLimiter = new SlidingWindowLimiter(opts.aiRateLimitPerMin ?? 20, 60_000);
 
@@ -308,6 +312,80 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     res.json({ authenticated: false });
   });
 
+  // Agents have no owner session: the one-time code is the credential.
+  app.post('/api/agent/enroll', (req, res) => {
+    const ip = clientIp(req);
+    if (enrollLimiter.isBlocked(ip)) {
+      res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' });
+      return;
+    }
+    if (!enrollCodes.redeem(req.body?.code)) {
+      enrollLimiter.recordFailure(ip);
+      log(`[enroll] failed attempt from ${ip}`);
+      res.status(401).json({ error: 'This enrollment code is invalid, expired or already used. Create a new one in the Windows Host tab.' });
+      return;
+    }
+    enrollLimiter.reset(ip);
+
+    const previousHostId = typeof req.body?.previousHostId === 'string' ? req.body.previousHostId : '';
+    const existing = previousHostId ? hosts.get(previousHostId) : undefined;
+    const hostSecret = generateHostSecret();
+    let hostId: string;
+    if (existing) {
+      hostId = previousHostId;
+      existing.secretHash = hashSecret(hostSecret);
+      // The old connection was authorised by the secret we just rotated away.
+      if (existing.ws && existing.ws.readyState === WebSocket.OPEN) {
+        existing.ws.close(4409, 'Host re-enrolled');
+      }
+    } else {
+      hostId = `pc-${crypto.randomUUID().slice(0, 8)}`;
+      const name = typeof req.body?.name === 'string' && req.body.name.trim() ? req.body.name.trim().slice(0, 64) : 'Windows PC';
+      const pairingCode = generatePairingCode();
+      hosts.set(hostId, {
+        profile: {
+          hostId,
+          name,
+          groupLabel: 'Workstation',
+          os: 'Windows',
+          screenWidth: 1920,
+          screenHeight: 1080,
+          pairingCode,
+          pairingUrl: `${getBaseUrls(req).appUrl}/?pair=${pairingCode}&host=${encodeURIComponent(hostId)}`,
+          status: 'offline',
+          lastSeen: Date.now(),
+          agentType: 'windows-native',
+          activeWindow: 'Windows Desktop',
+          cpuUsage: 0,
+          memoryUsage: 0,
+          connectedControllers: 0,
+        },
+        ws: null,
+        controllers: new Set(),
+        secretHash: hashSecret(hostSecret),
+        needsKey: new Set(),
+        lastKeyRequestAt: 0,
+        adaptive: new AdaptiveQuality(),
+      });
+    }
+    persistHosts();
+    broadcastFleet();
+    log(`[enroll] host ${hostId} enrolled${existing ? ' (re-enrolled, secret rotated)' : ''} from ${ip}`);
+    res.json({ hostId, hostSecret });
+  });
+
+  // Someone opened the enrollment link in a browser. Never consumes or echoes the code.
+  app.get('/enroll/:code', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('html').send(
+      '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+        '<title>DeskBridge enrollment</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem">' +
+        '<h1>Add this PC to DeskBridge</h1><p>This is an enrollment link for the DeskBridge agent. ' +
+        'Copy the link from your browser address bar and paste it into the DeskBridge agent window on the PC you want to add.</p>' +
+        '<p>The link works once and expires 10 minutes after it was created.</p></body></html>',
+    );
+  });
+
   // Every other API route requires an owner session.
   app.use('/api', (req, res, next) => {
     if (!isRequestAuthenticated(auth, req)) {
@@ -327,6 +405,13 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
       return;
     }
     next();
+  });
+
+  app.post('/api/agent/enroll-codes', (req, res) => {
+    const { code, expiresAt } = enrollCodes.mint();
+    log('[enroll] code minted');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ code, expiresAt, link: `${getBaseUrls(req).appUrl}/enroll/${code}` });
   });
 
   app.get('/api/hosts', (_req, res) => {
@@ -697,15 +782,26 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
       const payload = msg.payload || {};
 
       if (event === 'host:register') {
-        if (!isOwner && !safeEqual(payload.enrollKey, auth.enrollKey)) {
-          rejectHost('Invalid or missing enrollment key. Download a fresh agent script from the DeskBridge Host tab.');
-          return;
+        const requestedId = typeof payload.hostId === 'string' ? payload.hostId : '';
+        // Native agents enrolled with a one-time code hold only a host secret. The shared
+        // enrollment key is for the PowerShell agent and goes away with it (T9).
+        const hasEnrollKey = safeEqual(payload.enrollKey, auth.enrollKey);
+        if (!isOwner && !hasEnrollKey) {
+          if (typeof payload.hostSecret !== 'string' || !payload.hostSecret) {
+            rejectHost('Invalid or missing enrollment key. Download a fresh agent script from the DeskBridge Host tab.');
+            return;
+          }
+          if (!hosts.get(requestedId)?.secretHash) {
+            // Distinct from 4401 so the agent knows to forget its credentials and re-enroll.
+            sendJson(ws, 'host:auth_error', { error: 'This PC is not enrolled (it may have been removed from the fleet). Enroll it again.' });
+            ws.close(4403, 'Host unknown or revoked');
+            return;
+          }
         }
         if (ownedHostId) {
           sendJson(ws, 'host:auth_error', { error: 'This connection already registered a host.' });
           return;
         }
-        const requestedId = typeof payload.hostId === 'string' ? payload.hostId : '';
         const hostId = HOST_ID_PATTERN.test(requestedId) ? requestedId : `pc-${crypto.randomUUID().slice(0, 8)}`;
         const existing = hosts.get(hostId);
 
