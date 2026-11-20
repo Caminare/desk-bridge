@@ -22,7 +22,7 @@ describe('Agent enrollment with one-time codes', () => {
   const mint = async () => {
     const { status, data } = await post(t.base, '/api/agent/enroll-codes', {}, cookie);
     assert.equal(status, 200);
-    return data as { code: string; link: string; expiresAt: number };
+    return data as { code: string; link: string; expiresAt: number; expiresIn: number };
   };
   const enroll = (body: Json) => post(t.base, '/api/agent/enroll', body);
   const register = async (payload: Json) => {
@@ -52,10 +52,12 @@ describe('Agent enrollment with one-time codes', () => {
   });
 
   test('a minted code comes with an enrollment link on this relay', async () => {
-    const { code, link, expiresAt } = await mint();
+    const { code, link, expiresAt, expiresIn } = await mint();
     assert.match(code, /^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
     assert.equal(link, `${t.base}/enroll/${code}`);
     assert.ok(expiresAt > Date.now());
+    // Relative lifetime, so a controller with a skewed clock still counts down correctly.
+    assert.ok(expiresIn > 9 * 60 * 1000 && expiresIn <= 10 * 60 * 1000, `expiresIn ${expiresIn}`);
   });
 
   test('a valid code enrolls a new offline host, once', async () => {

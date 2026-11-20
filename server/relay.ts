@@ -411,7 +411,13 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     const { code, expiresAt } = enrollCodes.mint();
     log('[enroll] code minted');
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ code, expiresAt, link: `${getBaseUrls(req).appUrl}/enroll/${code}` });
+    res.json({
+      code,
+      expiresAt,
+      // Relative too: the controller's clock may not match the relay's.
+      expiresIn: Math.max(0, expiresAt - Date.now()),
+      link: `${getBaseUrls(req).appUrl}/enroll/${code}`,
+    });
   });
 
   app.get('/api/hosts', (_req, res) => {
