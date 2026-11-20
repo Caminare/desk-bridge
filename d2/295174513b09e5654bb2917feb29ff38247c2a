@@ -1,0 +1,22 @@
+agent/windows/src/DeskBridge.Agent.App/Program.cs
+  ff4801d027867fcc 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d2295174513b09e5654bb2917feb29ff38247c2a",
+  "prompts": {
+    "ff4801d027867fcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c25fe7f9-a8dd-43b8-a413-79b98debe529",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 340,
+      "overriden_lines": 0
+    }
+  }
+}
