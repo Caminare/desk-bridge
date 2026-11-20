@@ -58,6 +58,9 @@ public sealed class InputInjector : IInputInjector
             case KeyPress key:
                 PressKey(key.VirtualKey, key.Modifiers);
                 break;
+            case OpenTaskManager:
+                using (System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("taskmgr.exe") { UseShellExecute = true })) { }
+                break;
         }
     }
 
