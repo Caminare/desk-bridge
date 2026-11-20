@@ -3,10 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace DeskBridge.Agent.Core.Relay;
 
-/// <summary>Static connection settings. ToString never includes the enrollment key.</summary>
+/// <summary>Static connection settings. The host secret lives in <see cref="IHostSecretStore"/>, never here.</summary>
 public sealed record RelayOptions(
     Uri RelayUri,
-    string EnrollmentKey,
     string HostId,
     string Name,
     string GroupLabel)

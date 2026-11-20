@@ -4,6 +4,7 @@ public interface IHostSecretStore
 {
     string? Load();
     void Save(string secret);
+    void Clear();
 }
 
 public sealed class InMemoryHostSecretStore : IHostSecretStore
@@ -15,6 +16,8 @@ public sealed class InMemoryHostSecretStore : IHostSecretStore
     public string? Load() => _secret;
 
     public void Save(string secret) => _secret = secret;
+
+    public void Clear() => _secret = null;
 
     public override string ToString() => nameof(InMemoryHostSecretStore);
 }

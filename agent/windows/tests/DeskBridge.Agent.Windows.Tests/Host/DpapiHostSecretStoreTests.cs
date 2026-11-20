@@ -33,6 +33,19 @@ public sealed class DpapiHostSecretStoreTests : IDisposable
         Assert.Null(new DpapiHostSecretStore(SecretPath).Load());
     }
 
+    [Fact]
+    public void Clear_deletes_the_secret_and_is_safe_when_already_gone()
+    {
+        var store = new DpapiHostSecretStore(SecretPath);
+        store.Save("s3cret-value-123");
+
+        store.Clear();
+        store.Clear();
+
+        Assert.False(File.Exists(SecretPath));
+        Assert.Null(store.Load());
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Monitor, MonitorPlay, Play, QrCode, ScreenShare, Square } from 'lucide-react';
 import type { RemoteInputEvent } from '../types/deskbridge';
 import { apiFetch } from '../lib/auth';
+import { AddPcCard } from './hostView/AddPcCard';
 import { AgentDownloadCard } from './hostView/AgentDownloadCard';
 import { PairingPanel } from './hostView/PairingPanel';
 import {
@@ -366,7 +367,8 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
           )}
         </div>
 
-        <div className="lg:col-span-5">
+        <div className="lg:col-span-5 space-y-6">
+          <AddPcCard />
           <AgentDownloadCard hostName={hostName} groupLabel={groupLabel} />
         </div>
       </div>
