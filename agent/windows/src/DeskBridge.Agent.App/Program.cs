@@ -99,6 +99,7 @@ static async Task<RelayStopReason> RunAgentAsync(AgentState state, IHostSecretSt
         secrets,
         new ClientWebSocketTransportFactory());
 
+    var ignoredInput = new IgnoredInputLog(Log);
     using CsvPerfLog? perfLog = perfLogPath is null ? null : CsvPerfLog.Create(perfLogPath);
     if (perfLog is not null) Log($"Writing per-frame timing to {Path.GetFullPath(perfLogPath!)}");
 
@@ -107,6 +108,7 @@ static async Task<RelayStopReason> RunAgentAsync(AgentState state, IHostSecretSt
         payload =>
         {
             if (InputParser.Parse(payload) is { } command) input.TryEnqueue(command);
+            else ignoredInput.Report(payload);
         },
         Log,
         perfLog is null ? null : new FramePerfOptions(perfLog, ThreadCycles.Current));
