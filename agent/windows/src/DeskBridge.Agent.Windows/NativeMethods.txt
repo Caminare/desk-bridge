@@ -30,3 +30,7 @@ GetCursorInfo
 GetIconInfo
 DrawIconEx
 BITMAPINFO
+
+// --- Diagnostics (perf log) ---
+QueryThreadCycleTime
+GetCurrentThread

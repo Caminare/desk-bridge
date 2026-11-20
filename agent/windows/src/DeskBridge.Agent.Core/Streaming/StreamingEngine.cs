@@ -8,6 +8,9 @@ namespace DeskBridge.Agent.Core.Streaming;
 /// <summary>Stream settings that the relay's adaptive <c>quality</c> input can change.</summary>
 public sealed record StreamSettings(int MaxWidth = 1152, int JpegQuality = 62, int IdleIntervalMs = 100);
 
+/// <summary>Per-frame timing output (<c>--perf-log</c>). <paramref name="ThreadCycles"/> reads the calling thread's cycle counter, or returns 0.</summary>
+public sealed record FramePerfOptions(IFramePerfSink Sink, Func<ulong> ThreadCycles);
+
 /// <summary>
 /// Wires capture, diff, encode, mailbox and pacing to a <see cref="RelayClient"/>, following the PowerShell
 /// agent's pipeline: a dedicated capture thread produces frames into a single-slot mailbox; a sender loop takes
@@ -21,6 +24,7 @@ public sealed class StreamingEngine : IDisposable
     private readonly ITileEncoder _encoder;
     private readonly Action<JsonElement> _onInput;
     private readonly Action<string> _log;
+    private readonly FramePerfOptions? _perf;
 
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly TileDiffer _differ = new();
@@ -43,8 +47,9 @@ public sealed class StreamingEngine : IDisposable
     private Thread? _captureThread;
 
     public StreamingEngine(RelayClient relay, IFrameSource source, ITileEncoder encoder, StreamSettings settings,
-        Action<JsonElement> onInput, Action<string> log)
+        Action<JsonElement> onInput, Action<string> log, FramePerfOptions? perf = null)
     {
+        _perf = perf;
         _relay = relay;
         _source = source;
         _encoder = encoder;
@@ -235,6 +240,19 @@ public sealed class StreamingEngine : IDisposable
 
     // ---- Capture thread ----
 
+    private void RecordPerf(EncodedFrame frame, IReadOnlyList<PixelRect> regions, in FrameImage image, ulong cycles0)
+    {
+        ulong cycles1 = _perf!.ThreadCycles();
+        long pixels = 0;
+        if (frame.Key) pixels = (long)image.Width * image.Height;
+        else foreach (PixelRect r in regions) pixels += (long)r.Width * r.Height;
+        _perf.Sink.Record(new FramePerfSample(
+            Now, frame.CaptureId, frame.Key, frame.TileCount, pixels, frame.PayloadBytes,
+            frame.CaptureMs, frame.DiffMs, frame.EncodeMs,
+            cycles0 == 0 || cycles1 < cycles0 ? 0 : cycles1 - cycles0,
+            Thread.GetCurrentProcessorId()));
+    }
+
     private void CaptureLoop()
     {
         long captureId = 0;
@@ -318,6 +336,7 @@ public sealed class StreamingEngine : IDisposable
         bool key = reason != KeyframeReason.None;
         IReadOnlyList<PixelRect> regions = key ? [] : _merger.Merge(diff.Changed, diff.TilesX, diff.TilesY, res.Image.Width, res.Image.Height);
         EncodedFrame frame;
+        ulong cycles0 = _perf?.ThreadCycles() ?? 0;
         try
         {
             frame = _assembler.Encode(res.Image, regions, key, _encoder, settings.JpegQuality);
@@ -336,6 +355,7 @@ public sealed class StreamingEngine : IDisposable
         frame.Generation = diff.Generation;
         frame.Snapshot = diff.Snapshot;
         frame.CaptureId = captureId;
+        if (_perf is not null) RecordPerf(frame, regions, res.Image, cycles0);
 
         if (!_mailbox.Post(frame, Now, out EncodedFrame? replaced))
         {
