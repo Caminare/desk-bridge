@@ -1,0 +1,47 @@
+agent/windows/src/DeskBridge.Agent.Core/Streaming/PerfLog.cs
+  ff4801d027867fcc 1-5,9-20,24-36,38-50,52-56,58,60-67
+  ff4801d027867fcc 6-8
+  ff4801d027867fcc 21-23
+  ff4801d027867fcc 37
+  ff4801d027867fcc 51
+  ff4801d027867fcc 57
+  ff4801d027867fcc 59
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/CsvPerfLogTests.cs
+  ff4801d027867fcc 1-10,13-23,26-36,38-45,47-48,65-67
+  ff4801d027867fcc 11-12
+  ff4801d027867fcc 24-25
+  ff4801d027867fcc 37
+  ff4801d027867fcc 46
+  ff4801d027867fcc 49-51,62-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1b7ffb080a75037ffbe44dfe7c4ba76db8e27408",
+  "prompts": {
+    "8f98172a1a9fea7a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f13c24c-d57f-4efa-8769-14ac1deb3df3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 33,
+      "total_deletions": 0,
+      "accepted_lines": 33,
+      "overriden_lines": 0
+    },
+    "ff4801d027867fcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c25fe7f9-a8dd-43b8-a413-79b98debe529",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 702,
+      "total_deletions": 227,
+      "accepted_lines": 454,
+      "overriden_lines": 24
+    }
+  }
+}
