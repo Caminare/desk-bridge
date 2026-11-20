@@ -1,0 +1,24 @@
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Input/IgnoredInputLogTests.cs
+  ff4801d027867fcc 1-44
+agent/windows/src/DeskBridge.Agent.Core/Input/IgnoredInputLog.cs
+  ff4801d027867fcc 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "683b88f2c7ffaa6bf5b181eb3c0158c55839588f",
+  "prompts": {
+    "ff4801d027867fcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c25fe7f9-a8dd-43b8-a413-79b98debe529",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 339,
+      "overriden_lines": 0
+    }
+  }
+}
