@@ -1,0 +1,22 @@
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Capture/DesktopFactAttribute.cs
+  9c3c5ef0e7c9853d 28-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e0d97f9d2aa251b7394208e10af44c941005a623",
+  "prompts": {
+    "9c3c5ef0e7c9853d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a5ba8fa-69e7-4086-b0b0-2378380b565a",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 12,
+      "total_deletions": 3,
+      "accepted_lines": 196,
+      "overriden_lines": 0
+    }
+  }
+}
