@@ -1,0 +1,20 @@
+agent/windows/src/DeskBridge.Agent.Core/Input/InputCommands.cs
+  h_07bc29e988e787 41-43
+agent/windows/src/DeskBridge.Agent.Core/Input/InputParser.cs
+  h_07bc29e988e787 36,146-192,211
+agent/windows/src/DeskBridge.Agent.Windows/Input/InputInjector.cs
+  h_07bc29e988e787 61-63
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Input/InputParserTests.cs
+  h_07bc29e988e787 178-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eb2a26bccf339f405b514d44b189b59ffab60fa9",
+  "prompts": {},
+  "humans": {
+    "h_07bc29e988e787": {
+      "author": "Gabriel Vitor <c-gvitor@neogov.net>"
+    }
+  }
+}
