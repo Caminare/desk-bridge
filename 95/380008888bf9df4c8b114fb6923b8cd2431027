@@ -1,0 +1,27 @@
+src/lib/longPressDrag.ts
+  ff4801d027867fcc 1-71
+src/hooks/useLongPressDrag.ts
+  ff4801d027867fcc 1-88
+  ff4801d027867fcc 89-90
+tests/longPressDrag.test.ts
+  ff4801d027867fcc 1-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "95380008888bf9df4c8b114fb6923b8cd2431027",
+  "prompts": {
+    "ff4801d027867fcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c25fe7f9-a8dd-43b8-a413-79b98debe529",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 255,
+      "overriden_lines": 0
+    }
+  }
+}
