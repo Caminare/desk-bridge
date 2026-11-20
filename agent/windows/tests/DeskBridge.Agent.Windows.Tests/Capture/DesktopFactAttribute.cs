@@ -23,11 +23,20 @@ public sealed class DesktopFactAttribute : FactAttribute
     {
         if (Environment.GetEnvironmentVariable("DESKBRIDGE_SKIP_DESKTOP_TESTS") == "1")
             Skip = "DESKBRIDGE_SKIP_DESKTOP_TESTS=1";
-        else if (NeedsDxgi && DxgiProblem.Value is { } problem)
-            Skip = "Desktop Duplication unavailable: " + problem;
     }
 
-    public bool NeedsDxgi { get; set; }
+    // Named attribute arguments are assigned after the constructor runs, so the DXGI probe
+    // has to happen here; checking NeedsDxgi in the constructor always sees false.
+    public bool NeedsDxgi
+    {
+        get;
+        set
+        {
+            field = value;
+            if (value && Skip is null && DxgiProblem.Value is { } problem)
+                Skip = "Desktop Duplication unavailable: " + problem;
+        }
+    }
 
     private static string? ProbeDxgi()
     {
