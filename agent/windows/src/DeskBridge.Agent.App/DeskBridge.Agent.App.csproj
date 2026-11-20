@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <AssemblyName>DeskBridge.Agent</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DeskBridge.Agent.Core\DeskBridge.Agent.Core.csproj" />
+    <ProjectReference Include="..\DeskBridge.Agent.Windows\DeskBridge.Agent.Windows.csproj" />
+  </ItemGroup>
+
+  <!-- Bundle the TurboJPEG native DLL into the single-file exe (IncludeNativeLibrariesForSelfExtract). -->
+  <Target Name="IncludeTurboJpegInPublish" BeforeTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(MSBuildThisFileDirectory)../../third_party/libjpeg-turbo/turbojpeg.dll">
+        <RelativePath>turbojpeg.dll</RelativePath>
+        <ExcludeFromSingleFile>false</ExcludeFromSingleFile>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
+</Project>

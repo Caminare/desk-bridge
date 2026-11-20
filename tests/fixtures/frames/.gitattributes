@@ -1,0 +1,2 @@
+*.bin binary
+cases.json text eol=lf

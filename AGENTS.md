@@ -6,6 +6,8 @@ Guidance for AI coding agents (and humans) working on DeskBridge. Read this befo
 
 DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse, keyboard and PowerShell commands through a central Node relay to Windows host agents, which stream JPEG frames back. A Gemini assistant turns natural-language and voice requests into the same input events.
 
+**Source of truth:** the owner's Notion space "DeskBridge" holds the current state, capabilities, roadmap, specs and decisions. Read it before starting work (next task = lowest-Order Roadmap item not Done) and update it after each task. If it disagrees with this file about what is being built, Notion wins and this file gets updated.
+
 **This software executes arbitrary commands on real machines.** Treat every change that touches authentication, message routing or the agent scripts as security-sensitive.
 
 ## Layout

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeFrame, parseFrame, rewriteFrameHeader } from '../src/lib/frameProtocol.js';
+import { readFileSync } from 'node:fs';
+import { encodeFrame, parseFrame, rewriteFrameHeader, type FrameHeader } from '../src/lib/frameProtocol.js';
 
 const bytes = (...n: number[]) => new Uint8Array(n);
 
@@ -53,3 +54,54 @@ test('rewriteFrameHeader keeps payload and tile layout', () => {
   assert.equal(q.version, 2);
   assert.deepEqual(Array.from(out.subarray(q.tiles[0].offset, q.tiles[0].offset + 2)), [5, 6]);
 });
+
+// Golden vectors shared with the C# agent (agent/windows tests). Regenerate with
+// `npx tsx tests/fixtures/frames/generate.ts`.
+interface GoldenAccept {
+  name: string;
+  expect: 'accept';
+  version: 1 | 2;
+  header: FrameHeader;
+  tiles?: Array<{ x: number; y: number; w: number; h: number; data: string }>;
+  payload?: string;
+  file: string;
+}
+interface GoldenReject { name: string; expect: 'reject'; reason: string; bytes: string }
+
+const fixtureDir = new URL('./fixtures/frames/', import.meta.url);
+const golden: Array<GoldenAccept | GoldenReject> = JSON.parse(readFileSync(new URL('cases.json', fixtureDir), 'utf8')).cases;
+const fromHex = (h: string) => new Uint8Array(Buffer.from(h, 'hex'));
+
+test('golden frame vectors include valid and malformed cases', () => {
+  assert.ok(golden.some((c) => c.expect === 'accept'));
+  assert.ok(golden.some((c) => c.expect === 'reject'));
+});
+
+for (const c of golden) {
+  test(`golden frame vector: ${c.name}`, () => {
+    if (c.expect === 'reject') {
+      assert.equal(parseFrame(fromHex(c.bytes)), null, c.reason);
+      return;
+    }
+    const expected = new Uint8Array(readFileSync(new URL(c.file, fixtureDir)));
+    const payload = c.version === 1
+      ? fromHex(c.payload!)
+      : c.tiles!.map((t) => ({ x: t.x, y: t.y, w: t.w, h: t.h, data: fromHex(t.data) }));
+    assert.deepEqual(encodeFrame(c.version, c.header, payload), expected, 're-encoded bytes match the .bin');
+
+    const parsed = parseFrame(expected);
+    assert.ok(parsed, 'valid frame parses');
+    assert.equal(parsed.version, c.version);
+    if (c.version === 1) {
+      assert.equal(parsed.tiles.length, 1);
+      assert.deepEqual(expected.subarray(parsed.tiles[0].offset), fromHex(c.payload!));
+    } else {
+      assert.equal(parsed.tiles.length, c.tiles!.length);
+      c.tiles!.forEach((t, i) => {
+        const pt = parsed.tiles[i];
+        assert.deepEqual([pt.x, pt.y, pt.w, pt.h], [t.x, t.y, t.w, t.h]);
+        assert.deepEqual(expected.subarray(pt.offset, pt.offset + pt.length), fromHex(t.data));
+      });
+    }
+  });
+}

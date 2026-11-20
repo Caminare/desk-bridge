@@ -1,0 +1,32 @@
+// CsWin32 input. One API per line. Keep each slice's entries in its own section.
+
+// --- Input ---
+SendInput
+GetSystemMetrics
+MapVirtualKey
+VkKeyScanEx
+GetKeyboardLayout
+LockWorkStation
+GetCursorPos
+
+// --- DPI / monitors ---
+SetProcessDpiAwarenessContext
+SetThreadDpiAwarenessContext
+EnumDisplayMonitors
+GetMonitorInfo
+
+// --- Capture (GDI fallback) ---
+MonitorFromPoint
+GetDC
+ReleaseDC
+CreateCompatibleDC
+DeleteDC
+CreateDIBSection
+SelectObject
+DeleteObject
+SetStretchBltMode
+StretchBlt
+GetCursorInfo
+GetIconInfo
+DrawIconEx
+BITMAPINFO

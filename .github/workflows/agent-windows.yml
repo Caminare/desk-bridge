@@ -1,0 +1,60 @@
+name: Agent (Windows)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent/windows/**"
+      - "tests/fixtures/frames/**"
+      - ".github/workflows/agent-windows.yml"
+  pull_request:
+    paths:
+      - "agent/windows/**"
+      - "tests/fixtures/frames/**"
+      - ".github/workflows/agent-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agent/windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: agent/windows/global.json
+
+      - run: dotnet test tests/DeskBridge.Agent.Core.Tests
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agent/windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: agent/windows/global.json
+
+      - name: Verify vendored libjpeg-turbo
+        shell: bash
+        working-directory: agent/windows/third_party/libjpeg-turbo
+        run: sha256sum -c turbojpeg.dll.sha256
+
+      - run: dotnet test DeskBridge.Agent.sln -c Release
+
+      - run: dotnet publish src/DeskBridge.Agent.App -c Release -o artifacts/publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskbridge-agent-win-x64
+          path: agent/windows/artifacts/publish/DeskBridge.Agent.exe
