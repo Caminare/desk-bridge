@@ -41,5 +41,10 @@ public sealed class DpapiHostSecretStore : IHostSecretStore
         File.Move(tmp, _path, overwrite: true);
     }
 
+    public void Clear()
+    {
+        if (File.Exists(_path)) File.Delete(_path);
+    }
+
     public override string ToString() => nameof(DpapiHostSecretStore);
 }

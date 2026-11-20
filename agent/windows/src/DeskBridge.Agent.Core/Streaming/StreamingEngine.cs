@@ -64,16 +64,22 @@ public sealed class StreamingEngine : IDisposable
         _captureWake.Set();
     }
 
-    /// <summary>Runs the relay connection, the event loop, the capture thread and the sender until cancelled.</summary>
-    public async Task RunAsync(CancellationToken ct)
+    /// <summary>
+    /// Runs the relay connection, the event loop, the capture thread and the sender until cancelled,
+    /// or until the relay revokes this host, which stops everything else too.
+    /// </summary>
+    public async Task<RelayStopReason> RunAsync(CancellationToken ct)
     {
         _captureThread = new Thread(CaptureLoop) { IsBackground = true, Name = "DeskBridge capture" };
         _captureThread.Start();
+        using var loops = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var reason = RelayStopReason.Cancelled;
         try
         {
-            await Task.WhenAll(_relay.RunAsync(ct), EventLoopAsync(ct), SendLoopAsync(ct)).ConfigureAwait(false);
+            var relayRun = RunRelayAsync();
+            await Task.WhenAll(relayRun, EventLoopAsync(loops.Token), SendLoopAsync(loops.Token)).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (loops.IsCancellationRequested)
         {
         }
         finally
@@ -81,6 +87,14 @@ public sealed class StreamingEngine : IDisposable
             _stopping = true;
             _captureWake.Set();
             _captureThread.Join(TimeSpan.FromSeconds(2));
+        }
+        return reason;
+
+        async Task RunRelayAsync()
+        {
+            reason = await _relay.RunAsync(ct).ConfigureAwait(false);
+            // Revoked: the relay loop has ended for good, so the sender must not wait for ct.
+            await loops.CancelAsync().ConfigureAwait(false);
         }
     }
 
@@ -112,6 +126,10 @@ public sealed class StreamingEngine : IDisposable
                     break;
                 case AuthErrorEvent e:
                     _log($"Relay rejected this agent: {e.Message}");
+                    break;
+                case DisconnectedEvent { Revoked: true }:
+                    SetStreaming(false);
+                    _log("The relay no longer knows this PC (removed from the fleet?). Credentials cleared.");
                     break;
                 case DisconnectedEvent d:
                     SetStreaming(false);

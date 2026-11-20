@@ -9,7 +9,6 @@ namespace DeskBridge.Agent.Core.Tests.Relay;
 
 public class RelayClientTests
 {
-    private const string Key = "enroll-key-123";
     private const string Secret = "host-secret-abc";
 
     private sealed class FakeTransport : IRelayTransport
@@ -83,7 +82,7 @@ public class RelayClientTests
     private sealed class Harness : IAsyncDisposable
     {
         private readonly CancellationTokenSource _cts = new(TimeSpan.FromSeconds(20));
-        private readonly Task _run;
+        private readonly Task<RelayStopReason> _run;
         public FakeFactory Factory { get; } = new();
         public InMemoryHostSecretStore Secrets { get; }
         public List<TimeSpan> Delays { get; } = [];
@@ -92,7 +91,7 @@ public class RelayClientTests
         public Harness(string? storedSecret = null)
         {
             Secrets = new InMemoryHostSecretStore(storedSecret);
-            var options = new RelayOptions(new Uri("wss://relay.example/ws"), Key, "win-1234", "Desk", "Lab");
+            var options = new RelayOptions(new Uri("wss://relay.example/ws"), "win-1234", "Desk", "Lab");
             Client = new RelayClient(
                 options,
                 () => new RegistrationSnapshot(
@@ -125,6 +124,8 @@ public class RelayClientTests
             }
         }
 
+        public Task<RelayStopReason> Run => _run;
+
         public async ValueTask DisposeAsync()
         {
             await _cts.CancelAsync();
@@ -156,7 +157,7 @@ public class RelayClientTests
         Assert.Equal(1440, p.GetProperty("screenHeight").GetInt32());
         Assert.Equal(1, p.GetProperty("activeMonitor").GetInt32());
         Assert.Equal("windows-native", p.GetProperty("agentType").GetString());
-        Assert.Equal(Key, p.GetProperty("enrollKey").GetString());
+        Assert.False(p.TryGetProperty("enrollKey", out _));
         Assert.False(p.TryGetProperty("hostSecret", out _));
 
         var monitors = p.GetProperty("monitors");
@@ -296,9 +297,9 @@ public class RelayClientTests
     public async Task Secrets_are_not_exposed_by_ToString()
     {
         await using var h = new Harness(Secret);
-        var options = new RelayOptions(new Uri("wss://r/ws"), Key, "id", "n", "g");
-        Assert.DoesNotContain(Key, options.ToString());
-        Assert.DoesNotContain(Key, h.Client.ToString());
+        var options = new RelayOptions(new Uri("wss://r/ws"), "id", "n", "g");
+        Assert.DoesNotContain(Secret, options.ToString());
+        Assert.DoesNotContain(Secret, h.Client.ToString());
         Assert.DoesNotContain(Secret, h.Secrets.ToString());
     }
 
@@ -306,13 +307,40 @@ public class RelayClientTests
     public async Task Send_before_connect_throws_without_leaking_secrets()
     {
         var client = new RelayClient(
-            new RelayOptions(new Uri("wss://r/ws"), Key, "id", "n", "g"),
+            new RelayOptions(new Uri("wss://r/ws"), "id", "n", "g"),
             () => new RegistrationSnapshot(1, 1, [], 0, "os"),
             new InMemoryHostSecretStore(Secret),
             new FakeFactory());
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => client.SendBinaryAsync(new byte[1]));
-        Assert.DoesNotContain(Key, ex.Message);
         Assert.DoesNotContain(Secret, ex.Message);
+    }
+
+    [Fact]
+    public async Task Close_4403_clears_the_secret_reports_revoked_and_stops_retrying()
+    {
+        await using var h = new Harness(Secret);
+        var t0 = await h.Transport(0);
+        t0.PushClose(4403, "Host unknown or revoked");
+
+        var dc = await h.Next<DisconnectedEvent>();
+        Assert.True(dc.Revoked);
+        Assert.Equal(4403, dc.CloseCode);
+        Assert.Null(h.Secrets.Load());
+        Assert.Equal(RelayStopReason.Revoked, await h.Run.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Single(h.Factory.Created);
+        Assert.Empty(h.Delays);
+        await WaitUntil(() => h.Client.Events.Completion.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Close_4401_keeps_the_secret()
+    {
+        await using var h = new Harness(Secret);
+        var t0 = await h.Transport(0);
+        t0.PushClose(4401, "bad");
+        var dc = await h.Next<DisconnectedEvent>();
+        Assert.False(dc.Revoked);
+        Assert.Equal(Secret, h.Secrets.Load());
     }
 
     [Fact]
@@ -321,6 +349,7 @@ public class RelayClientTests
         var h = new Harness();
         await h.Transport(0);
         await h.DisposeAsync();
+        Assert.Equal(RelayStopReason.Cancelled, await h.Run);
         await WaitUntil(() => h.Client.Events.Completion.IsCompleted);
     }
 }

@@ -12,6 +12,7 @@ public sealed class RelayClient
     private const int ReceiveChunk = 16 * 1024;
     private const int CloseAuthFailed = 4401;
     private const int CloseReplaced = 4409;
+    private const int CloseRevoked = 4403;
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -73,15 +74,19 @@ public sealed class RelayClient
         }
     }
 
-    /// <summary>Connects, registers and receives until cancelled, reconnecting after each drop.</summary>
-    public async Task RunAsync(CancellationToken ct)
+    /// <summary>
+    /// Connects, registers and receives, reconnecting after each drop, until cancelled or until the
+    /// relay revokes this host (4403), in which case the stored secret is cleared first.
+    /// </summary>
+    public async Task<RelayStopReason> RunAsync(CancellationToken ct)
     {
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 var retry = await RunConnectionAsync(ct).ConfigureAwait(false);
-                await _delay(retry, ct).ConfigureAwait(false);
+                if (retry is null) return RelayStopReason.Revoked;
+                await _delay(retry.Value, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -91,9 +96,11 @@ public sealed class RelayClient
         {
             _events.Writer.TryComplete();
         }
+        return RelayStopReason.Cancelled;
     }
 
-    private async Task<TimeSpan> RunConnectionAsync(CancellationToken ct)
+    /// <returns>Delay before the next attempt, or null when the host was revoked.</returns>
+    private async Task<TimeSpan?> RunConnectionAsync(CancellationToken ct)
     {
         int? closeCode = null;
         var reason = "closed";
@@ -151,6 +158,13 @@ public sealed class RelayClient
             }
         }
 
+        if (closeCode == CloseRevoked)
+        {
+            _secrets.Clear();
+            _events.Writer.TryWrite(new DisconnectedEvent(reason, closeCode, false, true, TimeSpan.Zero, Revoked: true));
+            return null;
+        }
+
         var replaced = closeCode == CloseReplaced;
         authRejected |= closeCode == CloseAuthFailed;
         var retryIn = replaced || authRejected ? _options.AuthRejectedDelay : _options.RetryDelay;
@@ -172,7 +186,6 @@ public sealed class RelayClient
             ["monitors"] = JsonSerializer.SerializeToNode(s.Monitors, Json),
             ["activeMonitor"] = s.ActiveMonitor,
             ["agentType"] = RelayOptions.AgentType,
-            ["enrollKey"] = _options.EnrollmentKey,
         };
         var secret = _secrets.Load();
         if (!string.IsNullOrEmpty(secret)) payload["hostSecret"] = secret;
