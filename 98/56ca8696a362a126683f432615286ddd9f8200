@@ -1,0 +1,42 @@
+agent/windows/src/DeskBridge.Agent.Core/Enrollment/EnrollmentClient.cs
+  8f98172a1a9fea7a 1-97
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Enrollment/AgentStateFileTests.cs
+  8f98172a1a9fea7a 1-94
+agent/windows/src/DeskBridge.Agent.Core/Enrollment/AgentStateFile.cs
+  8f98172a1a9fea7a 1-69
+agent/windows/src/DeskBridge.Agent.Core/Streaming/StreamingEngine.cs
+  8f98172a1a9fea7a 67-71,75-76,79-80,82,91-98,130-133
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Host/DpapiHostSecretStoreTests.cs
+  8f98172a1a9fea7a 36-48
+agent/windows/src/DeskBridge.Agent.App/EnrollmentForm.cs
+  8f98172a1a9fea7a 1-184
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Enrollment/EnrollmentInputTests.cs
+  8f98172a1a9fea7a 1-96
+agent/windows/src/DeskBridge.Agent.App/Program.cs
+  8f98172a1a9fea7a 2-3,19-22,24-27,30-33,35-37,46,48-49,51,53-66,68-71,73-74,76,78,80-83,85-91,93-101,103-106,108-109,112-118
+AGENTS.md
+  8f98172a1a9fea7a 85
+agent/windows/src/DeskBridge.Agent.Core/Enrollment/EnrollmentInput.cs
+  8f98172a1a9fea7a 1-87
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Enrollment/EnrollmentClientTests.cs
+  8f98172a1a9fea7a 1-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9856ca8696a362a126683f432615286ddd9f8200",
+  "prompts": {
+    "8f98172a1a9fea7a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f13c24c-d57f-4efa-8769-14ac1deb3df3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 1377,
+      "total_deletions": 636,
+      "accepted_lines": 1374,
+      "overriden_lines": 0
+    }
+  }
+}
