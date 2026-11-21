@@ -210,11 +210,26 @@ public class InputParserTests
         Assert.Null(Parse(json));
     }
 
+    [Fact]
+    public void Monitor_selects_by_index()
+    {
+        Assert.Equal(new SelectMonitor(2), Parse("""{"type":"monitor","index":2}"""));
+    }
+
+    [Theory]
+    [InlineData("""{"type":"monitor"}""")]
+    [InlineData("""{"type":"monitor","index":"1"}""")]
+    [InlineData("""{"type":"monitor","index":1.5}""")]
+    [InlineData("""{"type":"monitor","index":-1}""")]
+    public void Monitor_without_a_non_negative_integer_index_returns_null(string json)
+    {
+        Assert.Null(Parse(json));
+    }
+
     [Theory]
     [InlineData("""{"type":"launch","target":"notepad"}""")]
     [InlineData("""{"type":"shell","command":"dir"}""")]
     [InlineData("""{"type":"quality","maxWidth":800,"jpegQuality":50}""")]
-    [InlineData("""{"type":"monitor","index":1}""")]
     [InlineData("""{"type":"MouseMove","x":0,"y":0}""")]
     public void Unsupported_or_unknown_types_return_null(string json)
     {

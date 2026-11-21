@@ -41,3 +41,9 @@ public sealed record KeyPress(ushort VirtualKey, Modifiers Modifiers) : InputCom
 
 /// <summary>Ctrl+Shift+Esc: injecting it is unreliable from an unelevated process, so Task Manager is started instead.</summary>
 public sealed record OpenTaskManager : InputCommand;
+
+/// <summary>
+/// Switch the streamed monitor. Not injected: the agent routes it to the display selection, which
+/// applies it on the capture thread.
+/// </summary>
+public sealed record SelectMonitor(int Index) : InputCommand;
