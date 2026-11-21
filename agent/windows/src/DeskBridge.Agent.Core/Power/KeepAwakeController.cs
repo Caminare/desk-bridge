@@ -12,8 +12,9 @@ public interface IPowerHold
 
 /// <summary>
 /// Opt-in keep-awake for as long as the agent runs, whether or not a controller is connected, so the PC is still awake
-/// and unlocked when someone reconnects later. Holds the system and display on from construction until disposed and
-/// nudges the idle timer every <see cref="NudgeIntervalMs"/>. Safe to tick from a timer thread while disposing.
+/// and unlocked when someone reconnects later. While enabled it holds the system and display on and nudges the idle
+/// timer every <see cref="NudgeIntervalMs"/>. Can be switched at runtime (tray toggle). Safe to tick from a timer
+/// thread while switching or disposing.
 /// </summary>
 public sealed class KeepAwakeController : IDisposable
 {
@@ -21,15 +22,30 @@ public sealed class KeepAwakeController : IDisposable
 
     private readonly object _gate = new();
     private readonly IPowerHold _power;
-    private bool _held;
+    private bool _enabled;
+    private bool _disposed;
     private long _lastNudgeMs;
 
-    public KeepAwakeController(IPowerHold power, long nowMs)
+    public KeepAwakeController(IPowerHold power, bool enabled, long nowMs)
     {
         _power = power;
-        _power.SetHeld(true);
-        _held = true;
-        _lastNudgeMs = nowMs;
+        SetEnabled(enabled, nowMs);
+    }
+
+    public bool Enabled
+    {
+        get { lock (_gate) return _enabled; }
+    }
+
+    public void SetEnabled(bool enabled, long nowMs)
+    {
+        lock (_gate)
+        {
+            if (_disposed || enabled == _enabled) return;
+            _enabled = enabled;
+            _lastNudgeMs = nowMs;
+            _power.SetHeld(enabled);
+        }
     }
 
     /// <summary>Call periodically (every few seconds); nudges once an interval has passed.</summary>
@@ -37,7 +53,7 @@ public sealed class KeepAwakeController : IDisposable
     {
         lock (_gate)
         {
-            if (!_held || nowMs - _lastNudgeMs < NudgeIntervalMs) return;
+            if (!_enabled || nowMs - _lastNudgeMs < NudgeIntervalMs) return;
             _lastNudgeMs = nowMs;
             _power.NudgeIdleTimer();
         }
@@ -47,9 +63,10 @@ public sealed class KeepAwakeController : IDisposable
     {
         lock (_gate)
         {
-            if (!_held) return;
-            _held = false;
-            _power.SetHeld(false);
+            if (_disposed) return;
+            if (_enabled) _power.SetHeld(false);
+            _enabled = false;
+            _disposed = true;
         }
     }
 }

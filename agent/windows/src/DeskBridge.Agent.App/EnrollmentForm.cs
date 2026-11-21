@@ -8,8 +8,6 @@ internal sealed record EnrollmentOutcome(EnrollmentTarget Target, EnrollmentResu
 /// <summary>First-run window: paste the enrollment link (or relay address + code), pick a name, enroll.</summary>
 internal sealed class EnrollmentForm : Form
 {
-    private static bool s_winFormsInitialized;
-
     private readonly EnrollmentClient _client;
     private readonly string? _previousHostId;
     private readonly TextBox _link = new() { Dock = DockStyle.Fill };
@@ -22,36 +20,27 @@ internal sealed class EnrollmentForm : Form
 
     public EnrollmentOutcome? Outcome { get; private set; }
 
-    /// <summary>Shows the window on its own STA thread and blocks until it closes. Null when cancelled.</summary>
-    public static EnrollmentOutcome? Run(EnrollmentClient client, string defaultName, string? previousHostId)
+    /// <summary>
+    /// Shows the window without blocking; the task completes when it closes (null when cancelled). Must be called on
+    /// the UI thread. <paramref name="ct"/> closes the window (agent quitting).
+    /// </summary>
+    public static Task<EnrollmentOutcome?> ShowAsync(EnrollmentClient client, string defaultName, string? previousHostId, CancellationToken ct)
     {
-        EnrollmentOutcome? outcome = null;
-        Exception? failure = null;
-        var thread = new Thread(() =>
+        var done = new TaskCompletionSource<EnrollmentOutcome?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var form = new EnrollmentForm(client, defaultName, previousHostId);
+        CancellationTokenRegistration closeOnCancel = default;
+        form.FormClosed += (_, _) =>
         {
-            try
-            {
-                if (!s_winFormsInitialized)
-                {
-                    Application.EnableVisualStyles();
-                    Application.SetCompatibleTextRenderingDefault(false);
-                    s_winFormsInitialized = true;
-                }
-                using var form = new EnrollmentForm(client, defaultName, previousHostId);
-                Application.Run(form);
-                outcome = form.Outcome;
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-            }
-        })
-        { Name = "DeskBridge enrollment UI" };
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join();
-        if (failure is not null) throw new InvalidOperationException("The enrollment window failed.", failure);
-        return outcome;
+            closeOnCancel.Dispose();
+            done.TrySetResult(form.Outcome);
+            form.Dispose();
+        };
+        form.Show();
+        closeOnCancel = ct.Register(() =>
+        {
+            if (form.IsHandleCreated && !form.IsDisposed) form.BeginInvoke(form.Close);
+        });
+        return done.Task;
     }
 
     private EnrollmentForm(EnrollmentClient client, string defaultName, string? previousHostId)
