@@ -84,7 +84,7 @@ Derived from `AGENTS.md`; the native agent must match all of these before the Po
 1. `host:register` with `enrollKey`, then `hostSecret` after first enrollment; reconnect and `4409` / `4401` handling; keep-alive pongs.
 2. Monitors list, `activeMonitor`, `host:update`, `monitor` input.
 3. Per-monitor DPI awareness (process-level PMv2 before any monitor query).
-4. All `RemoteInputEvent` types: `mousemove`, `click`, `mousedown`/`mouseup`, `scroll`, `type` (any Unicode, `\n` = Enter), `key` with modifiers, `hotkey`, `launch`, `shell` (owner-only), `clipboard`, `quality`, `monitor`.
+4. All `RemoteInputEvent` types: `mousemove`, `click`, `mousedown`/`mouseup`, `scroll`, `type` (any Unicode, `\n` = Enter), `key` with modifiers, `hotkey`, `quality`, `monitor`. Not `launch`, `shell` or `clipboard`: only the AI assistant sends the first two and nothing sends `clipboard` (Ctrl+C / Ctrl+V cover it), so they leave the protocol with the AI assistant (#12) instead of being ported (decided 2026-11-21, T6).
 5. `Win+L` mapped to `LockWorkStation()`.
 6. v2 frames with every `AgentFrameStats` field the strip uses, `host:frame_ack`, `host:keyframe_request`, `host:controller_count`.
 7. Opt-in keep-awake (`SetThreadExecutionState` plus idle-timer nudge while a controller is connected).
@@ -96,7 +96,7 @@ Derived from `AGENTS.md`; the native agent must match all of these before the Po
 The invariants in `AGENTS.md` still apply. Additions for the native agent:
 
 1. The agent never logs the host secret, enrollment key or access token.
-2. `shell` and `launch` stay owner-only and never interpolate untrusted strings into a shell command line.
+2. The native agent does not implement `shell` or `launch` (see the parity checklist). If either ever returns, it stays owner-only and never interpolates untrusted strings into a shell command line.
 3. A visible indicator is shown while a controller is connected.
 4. Service mode and secure desktop access are opt-in and arrive only in phase 4.
 
