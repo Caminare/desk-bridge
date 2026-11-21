@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type { TranscribeResponse } from '../src/types/deskbridge.js';
 
 /** Short, single-line description of a Gemini SDK error for logs and user-facing warnings. */
@@ -37,9 +37,10 @@ export async function transcribeDictation(audioBase64: string, mimeType: string)
   const candidateModels = Array.from(
     new Set([
       process.env.GEMINI_TRANSCRIBE_MODEL,
-      'gemini-3.5-transcribe',
       process.env.GEMINI_MODEL,
       'gemini-4-hydrogen',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite',
       'gemini-3.1-flash-lite',
     ].filter(Boolean) as string[]),
   );
@@ -49,6 +50,10 @@ export async function transcribeDictation(audioBase64: string, mimeType: string)
   const failures: Array<{ model: string; error: string }> = [];
   for (const model of candidateModels) {
     try {
+      const config =
+        model === 'gemini-4-hydrogen'
+          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+          : undefined;
       const response = await ai.models.generateContent({
         model,
         contents: {
@@ -64,6 +69,7 @@ export async function transcribeDictation(audioBase64: string, mimeType: string)
             },
           ],
         },
+        ...(config ? { config } : {}),
       });
       text = (response.text ?? '').trim();
       usedModel = model;
