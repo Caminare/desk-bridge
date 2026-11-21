@@ -1,0 +1,40 @@
+AGENTS.md
+  h_07bc29e988e787 7,24,27,30,37,39-40,102,105
+README.md
+  h_07bc29e988e787 3,5,19-21,52,63,71,82-83,187,265,325
+metadata.json
+  h_07bc29e988e787 3
+server/aiAssistant.ts
+  h_07bc29e988e787 1-2,34,47-48,63,68,73,77,81-84,87,89
+server/relay.ts
+  h_07bc29e988e787 16,37,75,285,551,553-554,558-560,562-563,565,657
+src/App.tsx
+  h_07bc29e988e787 18,216
+src/components/TouchControlDeck.tsx
+  h_07bc29e988e787 3,36,723-726,931
+src/components/controlDeck/KeyboardDrawer.tsx
+  h_07bc29e988e787 1-18,62-68,100-323,337,339,352-358,365-407,418-421,430-454,458,462,466,520,529
+src/hooks/useCoalescedPointerInput.ts
+  h_07bc29e988e787 4
+src/hooks/useLongPressDrag.ts
+  h_07bc29e988e787 5
+src/lib/dictation.ts
+  h_07bc29e988e787 1-25
+src/types/deskbridge.ts
+  h_07bc29e988e787 97-99,107
+tests/dictation.test.ts
+  h_07bc29e988e787 1-47
+tests/relay.test.ts
+  h_07bc29e988e787 25,42-49,312-331,335,338
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3a6f5d0918e6d4e527013f3d330d419b67db9beb",
+  "prompts": {},
+  "humans": {
+    "h_07bc29e988e787": {
+      "author": "Gabriel Vitor <c-gvitor@neogov.net>"
+    }
+  }
+}
