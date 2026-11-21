@@ -62,6 +62,12 @@ public sealed class StreamingEngine : IDisposable
 
     private long Now => _clock.ElapsedMilliseconds;
 
+    /// <summary>
+    /// Connection-level relay events (registered, controller count, disconnected), for the tray status. Raised on the
+    /// event loop; handlers must be quick and must not throw.
+    /// </summary>
+    public event Action<RelayEvent>? ConnectionEvent;
+
     /// <summary>Call after each applied input: captures at the fast rate and soon, so the result shows quickly.</summary>
     public void NotifyInputApplied()
     {
@@ -109,10 +115,12 @@ public sealed class StreamingEngine : IDisposable
     {
         await foreach (RelayEvent ev in _relay.Events.ReadAllAsync(ct).ConfigureAwait(false))
         {
+            if (ev is RegisteredEvent or ControllerCountEvent or DisconnectedEvent) ConnectionEvent?.Invoke(ev);
             switch (ev)
             {
                 case RegisteredEvent r:
-                    _log($"Online as {r.HostId}. Pairing code {r.PairingCode}  {r.PairingUrl}");
+                    // The pairing code is shown in the tray, not logged: the log is a file on disk.
+                    _log($"Online as {r.HostId}.");
                     break;
                 case ControllerCountEvent c:
                     SetStreaming(c.Count > 0);
