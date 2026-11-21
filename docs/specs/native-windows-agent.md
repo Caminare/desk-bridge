@@ -87,7 +87,7 @@ Derived from `AGENTS.md`; the native agent must match all of these before the Po
 4. All `RemoteInputEvent` types: `mousemove`, `click`, `mousedown`/`mouseup`, `scroll`, `type` (any Unicode, `\n` = Enter), `key` with modifiers, `hotkey`, `quality`, `monitor`. Not `launch`, `shell` or `clipboard`: only the AI assistant sends the first two and nothing sends `clipboard` (Ctrl+C / Ctrl+V cover it), so they leave the protocol with the AI assistant (#12) instead of being ported (decided 2026-11-21, T6).
 5. `Win+L` mapped to `LockWorkStation()`.
 6. v2 frames with every `AgentFrameStats` field the strip uses, `host:frame_ack`, `host:keyframe_request`, `host:controller_count`.
-7. Opt-in keep-awake (`SetThreadExecutionState` plus idle-timer nudge while a controller is connected).
+7. Opt-in keep-awake (power request plus idle-timer nudge for as long as the agent runs, connected or not, unlike the PowerShell agent which only held while a controller was connected; `keepAwake` in `agent.json`, set with `--keep-awake on|off`, a tray toggle in T7).
 8. Stream size as a pixel budget (`maxWidth` as a 16:9-equivalent width).
 9. Nagle disabled on the socket; capture wakes on input and keyframe requests.
 

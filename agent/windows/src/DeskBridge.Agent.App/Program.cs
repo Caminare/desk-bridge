@@ -3,6 +3,7 @@ using DeskBridge.Agent.App;
 using DeskBridge.Agent.Core.Displays;
 using DeskBridge.Agent.Core.Enrollment;
 using DeskBridge.Agent.Core.Input;
+using DeskBridge.Agent.Core.Power;
 using DeskBridge.Agent.Core.Relay;
 using DeskBridge.Agent.Core.Streaming;
 using DeskBridge.Agent.Windows.Capture;
@@ -18,27 +19,51 @@ string version = Assembly.GetExecutingAssembly()
 Log($"DeskBridge agent {version}");
 if (!PowerThrottling.OptOutOfExecutionSpeedThrottling()) Log("Could not opt out of power throttling; encoding may be slow.");
 
+string configPath = ArgValue(args, "--config")
+    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskBridge", "agent.json");
+string stateDir = Path.GetDirectoryName(Path.GetFullPath(configPath))!;
+var stateFile = new AgentStateFile(configPath);
+
+// Saved before the single-instance check, so it also works while an agent is running (it applies on the next start).
+if (args.Contains("--keep-awake"))
+{
+    bool? keepAwakeSetting = ArgValue(args, "--keep-awake") switch { "on" => true, "off" => false, _ => null };
+    if (keepAwakeSetting is null)
+    {
+        Log("Usage: --keep-awake on|off");
+        return 2;
+    }
+    AgentState saved = stateFile.Load(out _);
+    saved.KeepAwake = keepAwakeSetting.Value;
+    stateFile.Save(saved);
+    Log($"Keep-awake {(keepAwakeSetting.Value ? "on" : "off")} saved to {stateFile.Path}.");
+}
+
 // One agent per Windows user: a second one would fight over the host id, and --reenroll from a
 // second process would rotate the secret out from under the running one.
 using var instance = new Mutex(initiallyOwned: true, @"Local\DeskBridge.Agent", out bool firstInstance);
 if (!firstInstance)
 {
-    const string message = "DeskBridge agent is already running for this user. Close it first (Ctrl+C in its window).";
+    string message = "DeskBridge agent is already running for this user. Close it first (Ctrl+C in its window)."
+        + (args.Contains("--keep-awake") ? " The keep-awake setting applies when it next starts." : "");
     Log(message);
     if (args.Contains("--reenroll")) MessageBox.Show(message, "DeskBridge", MessageBoxButtons.OK, MessageBoxIcon.Information);
     return 3;
 }
 
-string configPath = ArgValue(args, "--config")
-    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskBridge", "agent.json");
-string stateDir = Path.GetDirectoryName(Path.GetFullPath(configPath))!;
-var stateFile = new AgentStateFile(configPath);
 var secrets = new DpapiHostSecretStore(Path.Combine(stateDir, "host-secret.bin"));
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 var enrollment = new EnrollmentClient(http);
 bool reenroll = args.Contains("--reenroll");
 // Per-frame timing CSV for latency work; off unless asked for.
 string? perfLogPath = ArgValue(args, "--perf-log");
+
+// Opt-in (--keep-awake on): for the agent's whole run, across disconnects and reconnects, so the PC is still awake
+// and unlocked when a controller comes back.
+using var powerHold = stateFile.Load(out _).KeepAwake ? new PowerRequestHold(Log) : null;
+using var keepAwake = powerHold is null ? null : new KeepAwakeController(powerHold, Environment.TickCount64);
+using var nudgeTimer = keepAwake is null ? null : new System.Threading.Timer(_ => keepAwake.Tick(Environment.TickCount64), null, 10_000, 10_000);
+if (keepAwake is not null) Log("Keep-awake on: the PC and display stay awake and unlocked while the agent runs.");
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
