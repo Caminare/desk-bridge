@@ -227,12 +227,6 @@ export class HostFrameCompositor {
     };
   }
 
-  /** Current picture as a JPEG data URL (for the AI assistant). */
-  toDataUrl(quality = 0.8): string | undefined {
-    if (!this.hasImage) return undefined;
-    return this.canvas.toDataURL('image/jpeg', quality);
-  }
-
   /** Current picture as a Blob (for thumbnails). */
   toBlob(quality = 0.7): Promise<Blob | null> {
     if (!this.hasImage) return Promise.resolve(null);

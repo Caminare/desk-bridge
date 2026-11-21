@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { RemoteInputEvent } from '../types/deskbridge';
 import { LONG_PRESS_MS, LongPressDrag } from '../lib/longPressDrag';
 
-type SendInput = (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard' | 'ai') => void;
+type SendInput = (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard') => void;
 
 /**
  * Long-press-then-move drag (see LongPressDrag) wired to the remote left button. Owns the hold

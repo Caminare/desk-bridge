@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, Bot, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad } from 'lucide-react';
+import { Activity, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad } from 'lucide-react';
 import type { HostProfile, RemoteInputEvent } from '../types/deskbridge';
 import { useCoalescedPointerInput } from '../hooks/useCoalescedPointerInput';
 import { useLongPressDrag } from '../hooks/useLongPressDrag';
@@ -19,12 +19,10 @@ import {
 } from '../lib/viewTransform';
 import { ZoomControls } from './controlDeck/ZoomControls';
 import type { FrameStore } from '../lib/frameCompositor';
-import { AIAssistantPanel } from './AIAssistantPanel';
 import { FullscreenHud, type InputMode } from './controlDeck/FullscreenHud';
 import { HostChips } from './controlDeck/HostChips';
 import { KeyboardDrawer, type KeyModifier } from './controlDeck/KeyboardDrawer';
 import { MonitorPicker } from './controlDeck/MonitorPicker';
-import { MobileAIDrawer } from './controlDeck/MobileAIDrawer';
 import { QUALITY_OPTIONS, QUALITY_PRESETS, type StreamQualityPreset } from './controlDeck/qualityPresets';
 import { StreamViewport } from './controlDeck/StreamViewport';
 import { TrackpadPanel, type PointerHandlers } from './controlDeck/TrackpadPanel';
@@ -33,10 +31,9 @@ import { registerPointerDown } from '../lib/activePointers';
 interface TouchControlDeckProps {
   hosts: HostProfile[];
   activeHost: HostProfile | null;
-  activeFrame: string | null;
   frameStore: FrameStore;
   onSelectHost: (hostId: string) => void;
-  onSendInput: (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard' | 'ai') => void;
+  onSendInput: (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard') => void;
   onOpenQrScanner: () => void;
   onOpenHostSetup: () => void;
 }
@@ -46,7 +43,6 @@ const MOUSE_DRAG_START_PX = 3;
 export function TouchControlDeck({
   hosts,
   activeHost,
-  activeFrame,
   frameStore,
   onSelectHost,
   onSendInput,
@@ -74,7 +70,6 @@ export function TouchControlDeck({
   const [hudHidden, setHudHidden] = useState(false);
   const [showFullscreenTrackpad, setShowFullscreenTrackpad] = useState(false);
   const [showKeyboard, setShowKeyboard] = useState(false);
-  const [showMobileAI, setShowMobileAI] = useState(false);
   const [textBuffer, setTextBuffer] = useState('');
   const [liveTyping, setLiveTyping] = useState(true);
   const [modifiers, setModifiers] = useState<KeyModifier[]>([]);
@@ -725,9 +720,10 @@ export function TouchControlDeck({
   };
 
   const handleTextChange = (val: string) => {
-    if (modifiers.length > 0 && val.length > textBuffer.length) {
-      // With sticky modifiers active, a typed character becomes a shortcut (e.g. Ctrl + c),
-      // not text, and is kept out of the buffer.
+    if (modifiers.length > 0 && val.length === textBuffer.length + 1 && val.startsWith(textBuffer)) {
+      // With sticky modifiers active, a single typed character becomes a shortcut (e.g. Ctrl + c),
+      // not text, and is kept out of the buffer. Multi-character inserts (paste, voice dictation)
+      // still update the buffer normally.
       sendKey(val.slice(-1));
       return;
     }
@@ -803,9 +799,6 @@ export function TouchControlDeck({
     setModifiers((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
   const selectMonitor = (index: number) => onSendInput({ type: 'monitor', index }, activeHost.hostId, 'touch');
   const sendText = (text: string) => onSendInput({ type: 'type', text }, activeHost.hostId, 'keyboard');
-  const getScreenshot = () => frameStore.peek(activeHost.hostId)?.toDataUrl();
-  const dispatchAiInput = (input: RemoteInputEvent, hostId?: string) =>
-    onSendInput(input, hostId || activeHost.hostId, 'ai');
 
   const closeKeyboard = () => {
     showKeyboardRef.current = false;
@@ -922,7 +915,6 @@ export function TouchControlDeck({
             statsOpen={showStats}
             onToggleStats={() => setShowStats((v) => !v)}
             onToggleKeyboard={toggleKeyboardDrawer}
-            onOpenAI={() => setShowMobileAI(true)}
             onHide={() => setHudHidden(true)}
             onShow={() => setHudHidden(false)}
             onExit={exitFullscreen}
@@ -936,8 +928,7 @@ export function TouchControlDeck({
     <div className="space-y-4">
       <HostChips hosts={hosts} activeHostId={activeHost.hostId} onSelectHost={onSelectHost} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-        <div className="lg:col-span-7 xl:col-span-8 space-y-3">
+      <div className="space-y-3">
           <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
             <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
@@ -1058,15 +1049,6 @@ export function TouchControlDeck({
                 <span>Keyboard</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setShowMobileAI(true)}
-                className="lg:hidden min-h-[40px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/10 border border-blue-600/30 text-blue-600 dark:text-blue-400 text-xs font-semibold whitespace-nowrap shrink-0"
-              >
-                <Bot className="w-4 h-4" />
-                <span>AI Voice</span>
-              </button>
-
               {[
                 { label: 'Win+D', combo: 'Win+D' },
                 { label: 'Alt+Tab', combo: 'Alt+Tab' },
@@ -1101,33 +1083,9 @@ export function TouchControlDeck({
           {showKeyboard && renderKeyboardDrawer(false)}
 
           {inputMode === 'trackpad' && renderTrackpadPanel(false)}
-        </div>
-
-        <div className="hidden lg:block lg:col-span-5 xl:col-span-4">
-          <AIAssistantPanel
-            activeHost={activeHost}
-            hosts={hosts}
-            activeFrame={activeFrame}
-            getScreenshot={getScreenshot}
-            onDispatchInput={dispatchAiInput}
-            onSwitchHost={onSelectHost}
-          />
-        </div>
       </div>
 
       {fullscreenOverlay}
-
-      {showMobileAI && (
-        <MobileAIDrawer
-          host={activeHost}
-          hosts={hosts}
-          frame={activeFrame}
-          getScreenshot={getScreenshot}
-          onDispatchInput={dispatchAiInput}
-          onSwitchHost={onSelectHost}
-          onClose={() => setShowMobileAI(false)}
-        />
-      )}
     </div>
   );
 }

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Bot,
   Laptop,
   LogOut,
   Monitor,
@@ -12,13 +11,11 @@ import {
 import { useDeskBridgeSocket } from './hooks/useDeskBridgeSocket';
 import { FleetView } from './components/FleetView';
 import { TouchControlDeck } from './components/TouchControlDeck';
-import { AIAssistantPanel } from './components/AIAssistantPanel';
 import { WindowsHostView } from './components/WindowsHostView';
 import { QrScannerModal } from './components/QrScannerModal';
-import { LiveStreamCanvas } from './components/LiveStreamCanvas';
 import { logout } from './lib/auth';
 
-type ActiveTab = 'fleet' | 'control' | 'assistant' | 'host';
+type ActiveTab = 'fleet' | 'control' | 'host';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('fleet');
@@ -29,7 +26,6 @@ export default function App() {
     hosts,
     activeHost,
     activeHostId,
-    activeFrame,
     framesByHost,
     frameStore,
     pairError,
@@ -82,7 +78,6 @@ export default function App() {
   const navItems: Array<{ id: ActiveTab; label: string; mobileLabel: string; icon: React.ReactNode }> = [
     { id: 'fleet', label: 'Fleet', mobileLabel: 'Fleet', icon: <Laptop className="w-5 h-5" /> },
     { id: 'control', label: 'Control Deck', mobileLabel: 'Control', icon: <Touchpad className="w-5 h-5" /> },
-    { id: 'assistant', label: 'AI Assistant', mobileLabel: 'AI Voice', icon: <Bot className="w-5 h-5" /> },
     { id: 'host', label: 'Windows Host', mobileLabel: 'Host PC', icon: <Monitor className="w-5 h-5" /> },
   ];
 
@@ -184,104 +179,12 @@ export default function App() {
           <TouchControlDeck
             hosts={hosts}
             activeHost={activeHost}
-            activeFrame={activeFrame}
             frameStore={frameStore}
             onSelectHost={pairHostById}
             onSendInput={sendRemoteInput}
             onOpenQrScanner={() => setQrModalOpen(true)}
             onOpenHostSetup={() => setActiveTab('host')}
           />
-        )}
-
-        {activeTab === 'assistant' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            <div className="lg:col-span-7">
-              <AIAssistantPanel
-                activeHost={activeHost}
-                hosts={hosts}
-                activeFrame={activeFrame}
-                getScreenshot={() => (activeHost ? frameStore.peek(activeHost.hostId)?.toDataUrl() : undefined)}
-                onDispatchInput={(input, hostId) =>
-                  sendRemoteInput(input, hostId || activeHost?.hostId, 'ai')
-                }
-                onSwitchHost={(hostId) => pairHostById(hostId)}
-              />
-            </div>
-
-            <div className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Target Workstation View
-                </h2>
-                {activeHost && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('control')}
-                    className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                  >
-                    Open Touch Controls
-                  </button>
-                )}
-              </div>
-
-              <div className="aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-center">
-                {activeHost ? (
-                  <LiveStreamCanvas
-                    store={frameStore}
-                    hostId={activeHost.hostId}
-                    ariaLabel="Active workstation view"
-                    className="w-full h-full object-contain"
-                    fallback={
-                      <div className="text-center p-6 space-y-1.5 text-slate-400">
-                        <Monitor className="w-8 h-8 mx-auto text-slate-600" />
-                        <p className="text-xs">Awaiting frame from active workstation</p>
-                      </div>
-                    }
-                  />
-                ) : (
-                  <div className="text-center p-6 space-y-1.5 text-slate-400">
-                    <Monitor className="w-8 h-8 mx-auto text-slate-600" />
-                    <p className="text-xs">Select a paired computer below</p>
-                  </div>
-                )}
-              </div>
-
-              {hosts.length > 0 && (
-                <div className="space-y-2 pt-1">
-                  <div className="text-xs font-medium text-slate-600 dark:text-slate-400">
-                    Switch Active Computer
-                  </div>
-                  <div className="space-y-1.5">
-                    {hosts.map((host) => (
-                      <button
-                        key={host.hostId}
-                        type="button"
-                        onClick={() => pairHostById(host.hostId)}
-                        className={`w-full min-h-[44px] px-3.5 py-2 rounded-xl border text-left flex items-center justify-between gap-3 text-xs transition-colors ${
-                          host.hostId === activeHostId
-                            ? 'border-blue-600 bg-blue-600/10 text-slate-900 dark:text-white font-semibold'
-                            : 'border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
-                        }`}
-                      >
-                        <span className="truncate">
-                          {host.groupLabel} · {host.name}
-                        </span>
-                        <span
-                          className={
-                            host.status === 'online'
-                              ? 'text-emerald-600 dark:text-emerald-400 shrink-0'
-                              : 'text-slate-400 shrink-0'
-                          }
-                        >
-                          {host.status === 'online' ? 'Online' : 'Offline'}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
         )}
 
         {activeTab === 'host' && <WindowsHostView onConnectToHost={handleSelectHost} />}
@@ -310,7 +213,7 @@ export default function App() {
       </main>
 
       <nav
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#090d16]/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 grid grid-cols-4 h-16 pb-safe"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#090d16]/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 grid grid-cols-3 h-16 pb-safe"
         aria-label="Mobile navigation"
       >
         {navItems.map((item) => {

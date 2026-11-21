@@ -94,34 +94,9 @@ export type RemoteInputEvent =
       index: number;
     };
 
-export type AIModelProvider = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite' | (string & {});
-
-export type AIThinkingMode = 'fast' | 'deep';
-
-export type AIActionName =
-  | 'open_application'
-  | 'type_text'
-  | 'press_hotkey'
-  | 'move_and_click'
-  | 'scroll_screen'
-  | 'run_shell_command'
-  | 'switch_workstation'
-  | 'lock_workstation';
-
-export interface AIActionStep {
-  id: string;
-  action: AIActionName;
-  label: string;
-  params: Record<string, unknown>;
-  status?: 'pending' | 'executed' | 'failed';
-}
-
-export interface AICommandResponse {
-  model: AIModelProvider;
-  transcript?: string;
-  reply: string;
-  actions: AIActionStep[];
-  spokenAudioBase64?: string;
+export interface TranscribeResponse {
+  text: string;
+  model: string;
   warning?: string;
 }
 
@@ -129,6 +104,6 @@ export interface ActivityLogEntry {
   id: string;
   timestamp: number;
   hostId: string;
-  source: 'touch' | 'keyboard' | 'ai' | 'system';
+  source: 'touch' | 'keyboard' | 'system';
   summary: string;
 }

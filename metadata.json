@@ -1,6 +1,6 @@
 {
   "name": "DeskBridge",
-  "description": "Access and control multiple Windows computers from your phone via QR pairing, touch controls, and Gemini AI voice & text commands.",
+  "description": "Access and control multiple Windows computers from your phone via QR pairing, touch controls, and Gemini voice dictation.",
   "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
