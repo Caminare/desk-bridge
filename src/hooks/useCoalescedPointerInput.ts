@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { RemoteInputEvent } from '../types/deskbridge';
 
-type SendInput = (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard' | 'ai') => void;
+type SendInput = (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard') => void;
 
 interface Pending {
   dx: number;

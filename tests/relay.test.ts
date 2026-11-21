@@ -22,7 +22,7 @@ describe('REST authentication', () => {
   for (const [method, path] of [
     ['GET', '/api/hosts'],
     ['GET', '/api/host-agent/download?format=ps1'],
-    ['POST', '/api/ai/command'],
+    ['POST', '/api/ai/transcribe'],
     ['POST', '/api/hosts/pair-code'],
     ['PATCH', '/api/hosts/x'],
     ['DELETE', '/api/hosts/x'],
@@ -37,6 +37,14 @@ describe('REST authentication', () => {
   test('anonymous health check reveals nothing beyond ok', async () => {
     const data = await (await fetch(`${t.base}/api/health`)).json();
     assert.deepEqual(data, { ok: true });
+  });
+
+  test('authenticated health check includes transcriptionReady and omits geminiReady', async () => {
+    const cookie = await loginCookie(t.base);
+    const data = await (await fetch(`${t.base}/api/health`, { headers: { cookie } })).json();
+    assert.equal(data.ok, true);
+    assert.equal(typeof data.transcriptionReady, 'boolean');
+    assert.equal('geminiReady' in data, false);
   });
 
   test('wrong token is rejected, right token sets an HttpOnly cookie', async () => {
@@ -301,13 +309,33 @@ describe('AI routes', () => {
     await t.stop();
   });
 
+  test('POST /api/ai/transcribe with missing audioBase64 returns 400', async () => {
+    const cookie = await loginCookie(t.base);
+    const res = await fetch(`${t.base}/api/ai/transcribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ mimeType: 'audio/webm' }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('POST /api/ai/transcribe with audioBase64 larger than 5 MB returns 413', async () => {
+    const cookie = await loginCookie(t.base);
+    const res = await fetch(`${t.base}/api/ai/transcribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ audioBase64: 'A'.repeat(5 * 1024 * 1024 + 1), mimeType: 'audio/webm' }),
+    });
+    assert.equal(res.status, 413);
+  });
+
   test('missing Gemini key yields 503, and requests are rate limited per session', async () => {
     const cookie = await loginCookie(t.base);
     const call = () =>
-      fetch(`${t.base}/api/ai/command`, {
+      fetch(`${t.base}/api/ai/transcribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', cookie },
-        body: JSON.stringify({ prompt: 'open notepad' }),
+        body: JSON.stringify({ audioBase64: 'AAAA', mimeType: 'audio/webm' }),
       });
     const first = await call();
     assert.equal(first.status, 503);

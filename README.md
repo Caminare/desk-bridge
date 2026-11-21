@@ -1,8 +1,8 @@
 # DeskBridge
 
-DeskBridge is a full-stack remote desktop and AI command platform built to let you register, organize, and control **multiple Windows computers** from your Android phone or web browser.
+DeskBridge is a full-stack remote desktop platform built to let you register, organize, and control **multiple Windows computers** from your Android phone or web browser.
 
-Each Windows computer runs a lightweight host agent that exposes its desktop over a WebSocket relay (TLS-encrypted when served over HTTPS) and generates a scannable QR code / 6-character pairing code. From your phone, you can pair any number of named Windows machines, switch between them in one tap, control them using an ergonomic touch trackpad or direct screen taps, and issue voice or text commands powered by **Gemini**.
+Each Windows computer runs a lightweight host agent that exposes its desktop over a WebSocket relay (TLS-encrypted when served over HTTPS) and generates a scannable QR code / 6-character pairing code. From your phone, you can pair any number of named Windows machines, switch between them in one tap, and control them using an ergonomic touch trackpad, direct screen taps, and keyboard voice dictation powered by **Gemini**.
 
 ---
 
@@ -16,10 +16,9 @@ Each Windows computer runs a lightweight host agent that exposes its desktop ove
   - **Zoom & Pan**: Zoom from 1× to 4× with the − / + buttons (tap the level to reset), by pinching (tap mode), or with Ctrl + mouse wheel. While zoomed, drag with one finger (tap mode) or use the overview minimap (any mode) to move anywhere on the screen. Taps still land exactly where you tap.
   - **Keyboard & Windows Shortcuts**: Send any text, including accents, CJK and emoji, from your mobile keyboard (buffered or live keystrokes). The toolbar has quick shortcuts (`Win+D`, `Alt+Tab`, copy/paste/undo, `Win+E`, `Alt+F4`, Task Manager, `Win+L`). The keyboard drawer adds sticky **Ctrl / Alt / Shift / Win** modifiers, F1–F12 and navigation keys, and a field for sending any combo (e.g. `Ctrl+Shift+T`).
   - **Multi-Monitor**: hosts with several displays show a monitor picker in the Control Deck and the fullscreen toolbar. The agent's `-MonitorIndex` parameter picks the starting display.
-- **Gemini Voice & Text Assistant**:
-  - Record voice commands (`gemini-3.5-transcribe`) or type natural instructions (`gemini-4-hydrogen` in Fast or Deep Reason mode).
-  - Screen-aware multimodal vision inspects the active computer's live frame to locate UI elements or summarize what is on screen.
-  - Translates commands into structured desktop actions (`open_application`, `type_text`, `press_hotkey`, `move_and_click`, `scroll_screen`, `run_shell_command`, `switch_workstation`, `lock_workstation`) with optional spoken confirmation (`gemini-3.8-flash-lite-tts`).
+- **Voice Dictation in the Keyboard Drawer**:
+  - Tap the microphone button in the keyboard drawer to dictate text with Gemini (`POST /api/ai/transcribe`).
+  - Dictated speech is transcribed verbatim with punctuation and either typed immediately on the remote PC (when `Live keystrokes` is enabled) or inserted into the keyboard buffer for review.
 
 ---
 
@@ -50,7 +49,7 @@ DeskBridge uses a three-part real-time architecture connected through a central 
 +----------------------------+          WSS (/ws)          +----------------------------+
 |   Windows Host Agent(s)    | --------------------------> |   DeskBridge Relay Server  |
 |  (PC #1, PC #2, ... PC #N) | <-------------------------- |   Express + WebSocket      |
-|                            |   JPEG frames & telemetry   |   + Gemini AI Orchestrator |
+|                            |   JPEG frames & telemetry   |   + Gemini Voice Dictation |
 |  - DeskBridge-Host.ps1     |   Win32 mouse/key/shell     +----------------------------+
 |  - or Browser Host Mode    |                                       ^          |
 +----------------------------+                                       |          | WSS (/ws)
@@ -61,7 +60,7 @@ DeskBridge uses a three-part real-time architecture connected through a central 
                                                            |                            |
                                                            |  - Fleet & QR Scanner      |
                                                            |  - Trackpad & Keyboard     |
-                                                           |  - Gemini Voice & Chat     |
+                                                           |  - Voice Dictation         |
                                                            +----------------------------+
 ```
 
@@ -69,7 +68,7 @@ DeskBridge uses a three-part real-time architecture connected through a central 
 - Runs an Express HTTP server and attaches a `ws` WebSocket server at `/ws`.
 - Maintains paired workstation profiles in `.deskbridge-hosts.json` alongside live WebSocket room mappings (`hosts` registry).
 - Routes `host:register` and `host:frame` events from connected Windows PCs to authorized controllers, and forwards `client:input` events (`mousemove`, `click`, `scroll`, `type`, `key`, `hotkey`, `launch`, `shell`, `clipboard`) directly to the target host.
-- Exposes REST endpoints for QR image generation (`/api/qr`), dynamic Windows agent script downloads (`/api/host-agent/download`), pairing code lookup (`/api/hosts/pair-code`), workstation renaming (`PATCH /api/hosts/:hostId`), and server-side Gemini AI execution (`/api/ai/command`, `/api/ai/voice-command`).
+- Exposes REST endpoints for QR image generation (`/api/qr`), dynamic Windows agent script downloads (`/api/host-agent/download`), pairing code lookup (`/api/hosts/pair-code`), workstation renaming (`PATCH /api/hosts/:hostId`), and server-side Gemini speech transcription (`/api/ai/transcribe`).
 
 ### 2. Windows Host Agent (`server/windowsAgentGenerator.ts` & `WindowsHostView.tsx`)
 - **Native Windows 10/11 Agent (`DeskBridge-Host.ps1` + `Start-DeskBridge.bat`)**: Pure PowerShell + `.NET` (`System.Drawing`, `System.Windows.Forms`, `System.Net.WebSockets.ClientWebSocket`, and inline Win32 `user32.dll` P/Invoke) requiring zero external runtimes. Captures scaled JPEG desktop frames via GDI+, prints a 6-character pairing code/URL, and executes real cursor movement (`SetCursorPos`), clicks (`mouse_event`), keystrokes (`SendKeys`), shortcuts, app launches (`Start-Process`), and PowerShell commands.
@@ -80,9 +79,8 @@ DeskBridge uses a three-part real-time architecture connected through a central 
 - Built as a responsive, thumb-ergonomic React + Vite Progressive Web App (`public/manifest.webmanifest`) so it can be installed directly onto Android home screens.
 - Uses `jsqr` for real-time camera QR decoding and screenshot QR decoding, `MediaRecorder` for mobile voice capture, and pointer-capture gestures for smooth trackpad control.
 
-### 4. Gemini AI Orchestrator (`server/aiAssistant.ts`)
-- Runs exclusively on the server using `@google/genai` and `process.env.GEMINI_API_KEY`.
-- Combines voice transcription (`gemini-3.5-transcribe`), computer-control function calling + screen vision (`gemini-4-hydrogen`), and optional TTS audio responses (`gemini-3.8-flash-lite-tts`).
+### 4. Gemini Voice Dictation (`server/aiAssistant.ts`)
+- Runs exclusively on the server using `@google/genai` and `process.env.GEMINI_API_KEY` to transcribe recorded audio from the keyboard drawer verbatim (`POST /api/ai/transcribe`).
 
 ---
 
@@ -186,7 +184,7 @@ All settings live in `/etc/deskbridge.env` on the server:
 ```bash
 nano /etc/deskbridge.env
 ```
-- **Gemini assistant:** set `GEMINI_API_KEY=your_key` (remove the leading `#`). Get a key at [Google AI Studio](https://aistudio.google.com).
+- **Gemini voice dictation:** set `GEMINI_API_KEY=your_key` (remove the leading `#`). Get a key at [Google AI Studio](https://aistudio.google.com).
 - **Your own access token:** change `DESKBRIDGE_ACCESS_TOKEN=` (at least 16 characters). This signs out every phone and browser.
 - **Show the current token:** `grep DESKBRIDGE_ACCESS_TOKEN /etc/deskbridge.env`
 - `APP_URL` is set from `--domain`. To change the domain, re-run the setup script with the new `--domain`, then re-download the agent on each PC.
@@ -264,7 +262,7 @@ You only need **one** DeskBridge server + **one** ngrok tunnel to control **all*
 - **All of your other Windows PCs (PC #1, PC #2, PC #3, ... PC #N)** do **not** run their own server and do **not** install ngrok. They only run the lightweight `DeskBridge-Host.ps1` script, which makes an outbound `wss://` connection to that one central ngrok URL.
 - **On your mobile phone**, you only ever open **that single URL** (`https://your-name.ngrok-free.app`). Every paired PC appears inside the **Fleet** tab and the **Control Deck** top switcher, so you can jump between computers with one tap.
 
-> **Why ngrok helps on Android**: Android Chrome requires `HTTPS` to allow camera access (live QR scanner) and microphone access (Gemini voice commands). ngrok provides an instant `HTTPS` + `WSS` tunnel automatically.
+> **Why ngrok helps on Android**: Android Chrome requires `HTTPS` to allow camera access (live QR scanner) and microphone access (voice dictation). ngrok provides an instant `HTTPS` + `WSS` tunnel automatically.
 
 ### Step 1: Start the DeskBridge Relay Server (on ONE Hub Machine)
 1. On the computer that will stay powered on as your relay hub, configure `.env`:
@@ -324,5 +322,5 @@ DeskBridge is packaged as an installable **Progressive Web App (PWA)** optimized
    - Tap **Enter Code** and type the 6-character pairing code printed by `Start-DeskBridge.bat`, **or**
    - Upload a screenshot of the QR code.
 4. Every paired computer now lives in your **Fleet** tab and in the top switcher bar of the **Control Deck** — no need to change URLs when switching PCs.
-5. Use **Trackpad** / **Tap Screen**, the **Keyboard** drawer, or tap the **Mic** in **AI Voice / AI Assistant** to control any paired PC hands-free from anywhere.
+5. Use **Trackpad** / **Tap Screen**, the **Keyboard** drawer, or tap the **Mic** in the **Keyboard** drawer to dictate text to any paired PC.
 

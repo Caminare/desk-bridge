@@ -13,8 +13,7 @@ import {
 import {
   GeminiUnavailableError,
   describeError,
-  processAssistantCommand,
-  transcribeAudioCommand,
+  transcribeDictation,
 } from './aiAssistant.js';
 import { SlidingWindowLimiter } from './rateLimit.js';
 import { AdaptiveQuality } from './adaptiveStream.js';
@@ -35,7 +34,7 @@ import {
   SESSION_COOKIE,
   verifySecret,
 } from './auth.js';
-import type { AIThinkingMode, HostProfile, MonitorInfo, RemoteInputEvent } from '../src/types/deskbridge.js';
+import type { HostProfile, MonitorInfo, RemoteInputEvent } from '../src/types/deskbridge.js';
 
 export interface RelayOptions {
   /** Port to listen on; 0 picks a free port. Default 3000. */
@@ -73,6 +72,7 @@ export interface RelayHandle {
 const WS_MAX_PAYLOAD = 8 * 1024 * 1024;
 const HOST_ID_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 const MAX_MONITORS = 16;
+const MAX_AUDIO_BASE64_LENGTH = 5 * 1024 * 1024;
 
 function clampDimension(value: unknown, fallback: number): number {
   const n = Math.round(Number(value));
@@ -282,7 +282,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     }
     res.json({
       ok: true,
-      geminiReady: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'),
+      transcriptionReady: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'),
       onlineHosts: Array.from(hosts.values()).filter((h) => h.profile.status === 'online').length,
     });
   });
@@ -548,95 +548,21 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     res.send(content);
   });
 
-  app.post('/api/ai/command', async (req, res) => {
+  app.post('/api/ai/transcribe', async (req, res) => {
     try {
-      const { prompt, thinkingMode, hostId, speakReply, screenshotBase64 } = req.body as {
-        prompt?: string;
-        thinkingMode?: AIThinkingMode;
-        hostId?: string;
-        speakReply?: boolean;
-        screenshotBase64?: string;
-      };
-
-      if (!prompt || !prompt.trim()) {
-        res.status(400).json({ error: 'Prompt is required.' });
-        return;
-      }
-
-      const activeEntry = hostId ? hosts.get(hostId) : undefined;
-      const clientShot =
-        typeof screenshotBase64 === 'string' && screenshotBase64.startsWith('data:image/')
-          ? screenshotBase64
-          : undefined;
-      const frame = clientShot || getLatestFrameDataUrl(activeEntry);
-
-      const result = await processAssistantCommand({
-        prompt: prompt.trim(),
-        thinkingMode: thinkingMode || 'fast',
-        activeHost: activeEntry?.profile,
-        availableHosts: getPublicHostsList(),
-        screenshotBase64: frame,
-        speakReply: Boolean(speakReply),
-      });
-
-      res.json(result);
-    } catch (err) {
-      sendAiError(res, err, 'Failed to process AI command.');
-    }
-  });
-
-  app.post('/api/ai/voice-command', async (req, res) => {
-    try {
-      const { audioBase64, mimeType, thinkingMode, hostId, speakReply, screenshotBase64 } = req.body as {
-        audioBase64?: string;
-        mimeType?: string;
-        thinkingMode?: AIThinkingMode;
-        hostId?: string;
-        speakReply?: boolean;
-        screenshotBase64?: string;
-      };
-
-      if (!audioBase64) {
+      const { audioBase64, mimeType } = (req.body ?? {}) as { audioBase64?: unknown; mimeType?: unknown };
+      if (typeof audioBase64 !== 'string' || !audioBase64.trim()) {
         res.status(400).json({ error: 'Audio payload is required.' });
         return;
       }
-
-      let transcript = '';
-      let transcribeWarning = '';
-      try {
-        transcript = await transcribeAudioCommand(audioBase64, mimeType || 'audio/webm');
-      } catch (err) {
-        // Fallback: pass raw audio directly to the multimodal command processor.
-        transcribeWarning = `Transcription failed (${describeError(err)}); sent the raw audio to the assistant instead.`;
-        console.warn(`[ai] ${transcribeWarning}`);
+      if (audioBase64.length > MAX_AUDIO_BASE64_LENGTH) {
+        res.status(413).json({ error: 'Audio payload exceeds the 5 MB limit.' });
+        return;
       }
-
-      const activeEntry = hostId ? hosts.get(hostId) : undefined;
-      const clientShot =
-        typeof screenshotBase64 === 'string' && screenshotBase64.startsWith('data:image/')
-          ? screenshotBase64
-          : undefined;
-      const frame = clientShot || getLatestFrameDataUrl(activeEntry);
-
-      const result = await processAssistantCommand({
-        prompt: transcript || undefined,
-        audioBase64: transcript ? undefined : audioBase64,
-        audioMimeType: transcript ? undefined : mimeType || 'audio/webm',
-        thinkingMode: thinkingMode || 'fast',
-        activeHost: activeEntry?.profile,
-        availableHosts: getPublicHostsList(),
-        screenshotBase64: frame,
-        speakReply: Boolean(speakReply),
-      });
-
-      const warning = [transcribeWarning, result.warning].filter(Boolean).join(' ');
-      res.json({
-        ...result,
-        transcript: transcript || 'Voice command',
-        ...(warning ? { warning } : {}),
-      });
+      const result = await transcribeDictation(audioBase64, typeof mimeType === 'string' && mimeType ? mimeType : 'audio/webm');
+      res.json(result);
     } catch (err) {
-      sendAiError(res, err, 'Failed to transcribe or execute voice command.');
+      sendAiError(res, err, 'Failed to transcribe audio.');
     }
   });
 
@@ -728,7 +654,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           outBuf = Buffer.from(rewritten.buffer, rewritten.byteOffset, rewritten.byteLength);
         }
 
-        // Cache a complete image for newly paired controllers and the AI assistant:
+        // Cache a complete image for newly paired controllers:
         // v1 frames, or v2 keyframes made of a single full-frame tile.
         if (parsed.isKey) {
           const t = parsed.tiles[0];

@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Activity,
-  Bot,
   ChevronDown,
   ChevronUp,
   Eye,
@@ -42,7 +41,6 @@ interface FullscreenHudProps {
   statsOpen: boolean;
   onToggleStats: () => void;
   onToggleKeyboard: () => void;
-  onOpenAI: () => void;
   onHide: () => void;
   onShow: () => void;
   onExit: () => void;
@@ -208,15 +206,6 @@ export function FullscreenHud(props: FullscreenHudProps) {
           aria-label="Toggle keyboard"
         >
           <Keyboard className="w-4 h-4" />
-        </button>
-
-        <button
-          type="button"
-          onClick={props.onOpenAI}
-          className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl bg-slate-800/90 text-blue-400 shrink-0"
-          aria-label="Open AI Voice Assistant"
-        >
-          <Bot className="w-4 h-4" />
         </button>
 
         <button
