@@ -89,3 +89,24 @@ test('a new touch-down rearms the gesture', () => {
   g.down(10, 10, 1000);
   assert.equal(g.tick(1350), true);
 });
+
+test('pressNow starts a drag immediately for a pointer with real buttons', () => {
+  const g = make();
+  g.down(0, 0, 0);
+  g.move(20, 0, 10); // past the slop: no long press any more
+  assert.equal(g.pressNow(), true);
+  assert.equal(g.isDragging, true);
+  assert.equal(g.move(200, 0, 20), false, 'still dragging, no second start');
+  assert.equal(g.up(), true);
+});
+
+test('pressNow does nothing without a touch-down or when already dragging', () => {
+  const idle = make();
+  assert.equal(idle.pressNow(), false);
+  assert.equal(idle.isDragging, false);
+
+  const dragging = make();
+  dragging.down(0, 0, 0);
+  dragging.tick(350);
+  assert.equal(dragging.pressNow(), false);
+});

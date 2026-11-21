@@ -73,6 +73,11 @@ export function useLongPressDrag(onSendInput: SendInput, activeHostId: string | 
     return gesture.isDragging;
   }, []);
 
+  /** Presses now instead of after the hold (a mouse or notebook trackpad has a real button). */
+  const pressNow = useCallback(() => {
+    if (gestureRef.current.pressNow()) startRef.current();
+  }, []);
+
   /** The finger lifted. Returns true when it ended a drag, so the caller skips its tap logic. */
   const end = useCallback(() => release(gestureRef.current.up()), [release]);
 
@@ -85,6 +90,6 @@ export function useLongPressDrag(onSendInput: SendInput, activeHostId: string | 
   cancelRef.current = cancel;
   useEffect(() => () => void cancelRef.current(), [activeHostId]);
 
-  return { begin, move, end, cancel, isDragging: () => gestureRef.current.isDragging };
+  return { begin, move, pressNow, end, cancel, isDragging: () => gestureRef.current.isDragging };
 }
 

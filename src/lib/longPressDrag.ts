@@ -57,6 +57,16 @@ export class LongPressDrag {
     return this.tick(now);
   }
 
+  /**
+   * Starts the drag now, without waiting for the hold: for a mouse or notebook trackpad, whose
+   * button is really pressed. True when the drag starts now (send button down).
+   */
+  pressNow(): boolean {
+    if (this.phase !== 'pending' && this.phase !== 'free') return false;
+    this.phase = 'dragging';
+    return true;
+  }
+
   /** The finger lifted. True when a drag was active (send button up). */
   up(): boolean {
     const wasDragging = this.phase === 'dragging';

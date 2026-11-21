@@ -41,6 +41,8 @@ interface TouchControlDeckProps {
   onOpenHostSetup: () => void;
 }
 
+const MOUSE_DRAG_START_PX = 3;
+
 export function TouchControlDeck({
   hosts,
   activeHost,
@@ -472,6 +474,16 @@ export function TouchControlDeck({
 
     const dp = directPointerRef.current;
     if (!dp || dp.pointerId !== e.pointerId) return;
+    // A mouse or notebook trackpad has a real left button: moving with it held drags at once, as
+    // on a local PC. A trackpad click nudges the pointer, so it would rarely meet the long press.
+    if (
+      e.pointerType === 'mouse' &&
+      (e.buttons & 1) !== 0 &&
+      !drag.isDragging() &&
+      Math.hypot(e.clientX - dp.startX, e.clientY - dp.startY) > MOUSE_DRAG_START_PX
+    ) {
+      drag.pressNow();
+    }
     if (drag.move(e.clientX, e.clientY)) {
       // Dragging: the remote cursor follows the finger with the button held.
       const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
