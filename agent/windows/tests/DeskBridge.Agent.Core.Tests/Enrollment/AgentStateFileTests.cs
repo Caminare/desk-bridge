@@ -19,6 +19,29 @@ public sealed class AgentStateFileTests : IDisposable
         Assert.Equal(Environment.MachineName, state.Name);
         Assert.Equal(1152, state.MaxWidth);
         Assert.Equal(62, state.JpegQuality);
+        Assert.False(state.KeepAwake);
+    }
+
+    [Fact]
+    public void File_written_before_keep_awake_existed_loads_with_it_off()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(PathIn)!);
+        File.WriteAllText(PathIn, """{"relayUrl":"wss://relay.example/ws","hostId":"pc-1","name":"Office"}""");
+
+        var state = new AgentStateFile(PathIn).Load(out var error);
+
+        Assert.Null(error);
+        Assert.True(state.IsEnrolled);
+        Assert.False(state.KeepAwake);
+    }
+
+    [Fact]
+    public void Keep_awake_round_trips()
+    {
+        var file = new AgentStateFile(PathIn);
+        file.Save(new AgentState { KeepAwake = true });
+
+        Assert.True(file.Load(out _).KeepAwake);
     }
 
     [Fact]

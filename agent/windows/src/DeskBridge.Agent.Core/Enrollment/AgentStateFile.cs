@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace DeskBridge.Agent.Core.Enrollment;
 
 /// <summary>
-/// Contents of agent.json: where this PC is enrolled and its stream preferences.
+/// Contents of agent.json: where this PC is enrolled, its stream preferences and host options.
 /// Holds no secrets; the host secret lives in the DPAPI store next to it.
 /// </summary>
 public sealed class AgentState
@@ -15,6 +15,8 @@ public sealed class AgentState
     [JsonPropertyName("groupLabel")] public string GroupLabel { get; set; } = "Workstation";
     [JsonPropertyName("maxWidth")] public int MaxWidth { get; set; } = 1152;
     [JsonPropertyName("jpegQuality")] public int JpegQuality { get; set; } = 62;
+    /// <summary>Keep the PC and display awake and unlocked while the agent runs, connected or not. Opt-in: set with --keep-awake on|off.</summary>
+    [JsonPropertyName("keepAwake")] public bool KeepAwake { get; set; }
 
     [JsonIgnore]
     public Uri? RelayUri =>
