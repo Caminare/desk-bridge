@@ -66,6 +66,10 @@ export function TrackpadPanel({
       <div className="grid grid-cols-12 gap-2">
         <div
           {...surfaceHandlers}
+          // A held finger is a drag (long press): the browser's own long-press menu or callout
+          // would cancel the pointer and release the remote button straight away.
+          onContextMenu={(e) => e.preventDefault()}
+          style={{ WebkitTouchCallout: 'none' }}
           className={`col-span-10 ${
             overlay
               ? 'h-32 sm:h-36 bg-slate-900 border-slate-800'
