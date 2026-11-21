@@ -1,0 +1,14 @@
+docs/specs/native-windows-agent.md
+  h_07bc29e988e787 87,99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d9f6cb6d486fd3d7e2db6945f0710ffe310eedb2",
+  "prompts": {},
+  "humans": {
+    "h_07bc29e988e787": {
+      "author": "Gabriel Vitor <c-gvitor@neogov.net>"
+    }
+  }
+}
