@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Activity, Bot, Keyboard, Lock, Maximize2, Monitor, MousePointerClick, QrCode, Touchpad } from 'lucide-react';
 import type { HostProfile, RemoteInputEvent } from '../types/deskbridge';
 import { useCoalescedPointerInput } from '../hooks/useCoalescedPointerInput';
+import { useLongPressDrag } from '../hooks/useLongPressDrag';
 import { mapToStreamCoords } from '../lib/streamCoords';
 import {
   DEFAULT_VIEW,
@@ -39,6 +40,8 @@ interface TouchControlDeckProps {
   onOpenQrScanner: () => void;
   onOpenHostSetup: () => void;
 }
+
+const MOUSE_DRAG_START_PX = 3;
 
 export function TouchControlDeck({
   hosts,
@@ -105,7 +108,14 @@ export function TouchControlDeck({
     scrollCursorMoved: boolean;
   } | null>(null);
 
-  const { queueMove, flushMove, queueMoveTo, cancelMoveTo, queueScroll, flushScroll } = useCoalescedPointerInput(onSendInput);
+  const { queueMove, flushMove, queueMoveTo, flushMoveTo, cancelMoveTo, queueScroll, flushScroll } =
+    useCoalescedPointerInput(onSendInput);
+  const flushCursorMoves = useCallback(() => {
+    flushMove();
+    flushMoveTo();
+  }, [flushMove, flushMoveTo]);
+  // Long-press then move drags with the left button, in both input modes (select text, move windows).
+  const drag = useLongPressDrag(onSendInput, activeHost?.hostId ?? null, flushCursorMoves);
 
   // Lock body scroll while fullscreen overlay is active (prevents iPad/iPhone Safari page bounce)
   useEffect(() => {
@@ -402,10 +412,12 @@ export function TouchControlDeck({
       directPointerRef.current = null;
       panRef.current = null;
       flushScroll();
+      drag.cancel();
     }
 
     if (directTouchesRef.current.size === 2) {
-      // Second finger: this is a pinch, not a tap or a scroll.
+      // Second finger: this is a pinch, not a tap, scroll or drag.
+      drag.cancel();
       directPointerRef.current = null;
       panRef.current = null;
       flushScroll();
@@ -427,6 +439,12 @@ export function TouchControlDeck({
       isScrolling: false,
       scrollCursorMoved: false,
     };
+    const hostId = activeHost.hostId;
+    drag.begin(e.clientX, e.clientY, () => {
+      // The drag starts under the finger, not wherever the cursor was.
+      cancelMoveTo();
+      onSendInput({ type: 'mousemove', x: nx, y: ny, relative: false }, hostId, 'touch');
+    });
   };
 
   const handleDirectPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -456,6 +474,24 @@ export function TouchControlDeck({
 
     const dp = directPointerRef.current;
     if (!dp || dp.pointerId !== e.pointerId) return;
+    // A mouse or notebook trackpad has a real left button: moving with it held drags at once, as
+    // on a local PC. A trackpad click nudges the pointer, so it would rarely meet the long press.
+    if (
+      e.pointerType === 'mouse' &&
+      (e.buttons & 1) !== 0 &&
+      !drag.isDragging() &&
+      Math.hypot(e.clientX - dp.startX, e.clientY - dp.startY) > MOUSE_DRAG_START_PX
+    ) {
+      drag.pressNow();
+    }
+    if (drag.move(e.clientX, e.clientY)) {
+      // Dragging: the remote cursor follows the finger with the button held.
+      const { nx, ny } = computeNormalizedCoords(e.clientX, e.clientY, e.currentTarget);
+      queueMoveTo(nx, ny, activeHost.hostId);
+      dp.lastX = e.clientX;
+      dp.lastY = e.clientY;
+      return;
+    }
     const totalDist = Math.hypot(e.clientX - dp.startX, e.clientY - dp.startY);
 
     // Zoomed in: dragging moves around the screen instead of scrolling the remote PC.
@@ -488,6 +524,7 @@ export function TouchControlDeck({
   const endDirectPointer = (pointerId: number) => {
     directTouchesRef.current.delete(pointerId);
     if (pinchRef.current && directTouchesRef.current.size < 2) {
+      drag.cancel();
       pinchRef.current = null;
       // The finger left on screen must not turn into a tap or a scroll.
       directPointerRef.current = null;
@@ -506,7 +543,7 @@ export function TouchControlDeck({
     panRef.current = null;
     flushScroll();
 
-    if (dp.isScrolling || wasPanning) return;
+    if (drag.end() || dp.isScrolling || wasPanning) return;
 
     const now = Date.now();
     const isDouble = now - lastTapTimeRef.current < 320;
@@ -524,6 +561,7 @@ export function TouchControlDeck({
   const handleDirectPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
     endDirectPointer(e.pointerId);
     if (directPointerRef.current?.pointerId === e.pointerId) {
+      drag.cancel();
       directPointerRef.current = null;
       panRef.current = null;
       flushScroll();
@@ -542,6 +580,8 @@ export function TouchControlDeck({
     });
 
     if (pointersMapRef.current.size >= 2) {
+      // Second finger: two-finger tap or scroll, never a drag.
+      drag.cancel();
       twoFingerTapRef.current = true;
       twoFingerMovedRef.current = false;
       const pts = Array.from(pointersMapRef.current.values());
@@ -560,6 +600,7 @@ export function TouchControlDeck({
         startY: e.clientY,
         startTime: Date.now(),
       };
+      drag.begin(e.clientX, e.clientY);
     }
   };
 
@@ -585,6 +626,8 @@ export function TouchControlDeck({
     }
 
     if (!lastPointerRef.current) return;
+    // Same relative moves either way; while dragging the button is simply held.
+    drag.move(e.clientX, e.clientY);
     const rawDx = e.clientX - lastPointerRef.current.x;
     const rawDy = e.clientY - lastPointerRef.current.y;
     lastPointerRef.current.x = e.clientX;
@@ -622,6 +665,7 @@ export function TouchControlDeck({
       twoFingerMidRef.current = null;
       const lp = lastPointerRef.current;
       lastPointerRef.current = null;
+      if (drag.end()) return;
 
       if (twoFingerTapRef.current) {
         const wasTap = !twoFingerMovedRef.current;

@@ -30,3 +30,14 @@ GetCursorInfo
 GetIconInfo
 DrawIconEx
 BITMAPINFO
+
+// --- Diagnostics (perf log) ---
+QueryThreadCycleTime
+GetCurrentThread
+
+// --- Power policy ---
+SetProcessInformation
+GetCurrentProcess
+PROCESS_POWER_THROTTLING_STATE
+PROCESS_POWER_THROTTLING_CURRENT_VERSION
+PROCESS_POWER_THROTTLING_EXECUTION_SPEED

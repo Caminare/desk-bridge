@@ -175,7 +175,42 @@ public class InputParserTests
     }
 
     [Theory]
-    [InlineData("""{"type":"hotkey","combo":"Ctrl+C"}""")]
+    [InlineData("Ctrl+C", 0x43, Modifiers.Ctrl)]
+    [InlineData("Ctrl+V", 0x56, Modifiers.Ctrl)]
+    [InlineData("ctrl + shift + t", 0x54, Modifiers.Ctrl | Modifiers.Shift)]
+    [InlineData("Alt+F4", 0x73, Modifiers.Alt)]
+    [InlineData("Win+E", 0x45, Modifiers.Win)]
+    [InlineData("F5", 0x74, Modifiers.None)]
+    [InlineData("Win", 0x5B, Modifiers.None)]
+    [InlineData("Ctrl++", 0xBB, Modifiers.Ctrl)]
+    [InlineData("Control+Meta+Delete", 0x2E, Modifiers.Ctrl | Modifiers.Win)]
+    public void Hotkey_combo_is_a_key_press_with_modifiers(string combo, int vk, Modifiers modifiers)
+    {
+        Assert.Equal(new KeyPress((ushort)vk, modifiers), Parse($$"""{"type":"hotkey","combo":"{{combo}}"}"""));
+    }
+
+    [Fact]
+    public void Hotkey_ctrl_shift_esc_opens_task_manager()
+    {
+        // Injected Ctrl+Shift+Esc is unreliable from an unelevated process (PowerShell agent starts taskmgr).
+        Assert.Equal(new OpenTaskManager(), Parse("""{"type":"hotkey","combo":"Ctrl+Shift+Esc"}"""));
+        Assert.Equal(new OpenTaskManager(), Parse("""{"type":"hotkey","combo":"shift+ctrl+escape"}"""));
+    }
+
+    [Theory]
+    [InlineData("""{"type":"hotkey"}""")]
+    [InlineData("""{"type":"hotkey","combo":""}""")]
+    [InlineData("""{"type":"hotkey","combo":"  "}""")]
+    [InlineData("""{"type":"hotkey","combo":7}""")]
+    [InlineData("""{"type":"hotkey","combo":"Ctrl+NoSuchKey"}""")]
+    [InlineData("""{"type":"hotkey","combo":"Hyper+C"}""")]
+    [InlineData("""{"type":"hotkey","combo":"C+Ctrl"}""")]
+    public void Hotkey_malformed_returns_null(string json)
+    {
+        Assert.Null(Parse(json));
+    }
+
+    [Theory]
     [InlineData("""{"type":"launch","target":"notepad"}""")]
     [InlineData("""{"type":"shell","command":"dir"}""")]
     [InlineData("""{"type":"quality","maxWidth":800,"jpegQuality":50}""")]

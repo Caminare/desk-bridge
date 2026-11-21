@@ -15,6 +15,7 @@ DpiAwareness.EnablePerMonitorV2();
 string version = Assembly.GetExecutingAssembly()
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
 Log($"DeskBridge agent {version}");
+if (!PowerThrottling.OptOutOfExecutionSpeedThrottling()) Log("Could not opt out of power throttling; encoding may be slow.");
 
 // One agent per Windows user: a second one would fight over the host id, and --reenroll from a
 // second process would rotate the secret out from under the running one.
@@ -35,6 +36,8 @@ var secrets = new DpapiHostSecretStore(Path.Combine(stateDir, "host-secret.bin")
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 var enrollment = new EnrollmentClient(http);
 bool reenroll = args.Contains("--reenroll");
+// Per-frame timing CSV for latency work; off unless asked for.
+string? perfLogPath = ArgValue(args, "--perf-log");
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -66,14 +69,14 @@ while (!cts.IsCancellationRequested)
         Log($"Enrolled as {state.HostId} on {outcome.Target.RelayBase}.");
     }
 
-    RelayStopReason reason = await RunAgentAsync(state, secrets, cts.Token);
+    RelayStopReason reason = await RunAgentAsync(state, secrets, perfLogPath, cts.Token);
     if (reason != RelayStopReason.Revoked) break;
     stateFile.ForgetEnrollment();
 }
 Log("Stopped.");
 return 0;
 
-static async Task<RelayStopReason> RunAgentAsync(AgentState state, IHostSecretStore secrets, CancellationToken ct)
+static async Task<RelayStopReason> RunAgentAsync(AgentState state, IHostSecretStore secrets, string? perfLogPath, CancellationToken ct)
 {
     var options = new RelayOptions(state.RelayUri!, state.HostId, state.Name, state.GroupLabel);
 
@@ -96,13 +99,19 @@ static async Task<RelayStopReason> RunAgentAsync(AgentState state, IHostSecretSt
         secrets,
         new ClientWebSocketTransportFactory());
 
+    var ignoredInput = new IgnoredInputLog(Log);
+    using CsvPerfLog? perfLog = perfLogPath is null ? null : CsvPerfLog.Create(perfLogPath);
+    if (perfLog is not null) Log($"Writing per-frame timing to {Path.GetFullPath(perfLogPath!)}");
+
     var settings = new StreamSettings(state.MaxWidth, state.JpegQuality);
     using var engine = new StreamingEngine(relay, source, encoder, settings,
         payload =>
         {
             if (InputParser.Parse(payload) is { } command) input.TryEnqueue(command);
+            else ignoredInput.Report(payload);
         },
-        Log);
+        Log,
+        perfLog is null ? null : new FramePerfOptions(perfLog, ThreadCycles.Current));
     input.InputApplied += engine.NotifyInputApplied;
 
     Log("Running. Press Ctrl+C to stop.");

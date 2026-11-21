@@ -38,3 +38,6 @@ public sealed record Scroll(double DeltaX, double DeltaY) : InputCommand;
 public sealed record TypeText(string Text) : InputCommand;
 
 public sealed record KeyPress(ushort VirtualKey, Modifiers Modifiers) : InputCommand;
+
+/// <summary>Ctrl+Shift+Esc: injecting it is unreliable from an unelevated process, so Task Manager is started instead.</summary>
+public sealed record OpenTaskManager : InputCommand;

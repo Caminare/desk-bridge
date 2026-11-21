@@ -33,6 +33,7 @@ public static class InputParser
             "scroll" => ParseScroll(payload),
             "type" => ParseType(payload),
             "key" => ParseKey(payload),
+            "hotkey" => ParseHotkey(payload),
             _ => null,
         };
     }
@@ -142,6 +143,53 @@ public static class InputParser
         return new KeyPress(vk, modifiers);
     }
 
+    /// <summary>
+    /// A combo such as "Ctrl+Shift+T", "Alt+F4" or "F5": the last part is the key, the others modifiers.
+    /// Mirrors the PowerShell agent's <c>Send-KeyCombo</c>, including "Ctrl++" for the plus key.
+    /// </summary>
+    private static InputCommand? ParseHotkey(JsonElement obj)
+    {
+        if (!TryRequiredString(obj, "combo", out string combo))
+        {
+            return null;
+        }
+        var parts = combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (combo.TrimEnd().EndsWith("++", StringComparison.Ordinal))
+        {
+            parts.Add("+");
+        }
+        if (parts.Count == 0 || !VirtualKeys.TryGetVirtualKey(parts[^1], out ushort vk))
+        {
+            return null;
+        }
+        Modifiers modifiers = Modifiers.None;
+        foreach (string name in parts.Take(parts.Count - 1))
+        {
+            Modifiers flag = ModifierFromName(name);
+            if (flag == Modifiers.None)
+            {
+                return null;
+            }
+            modifiers |= flag;
+        }
+        if (vk == VkEscape && modifiers == (Modifiers.Ctrl | Modifiers.Shift))
+        {
+            return new OpenTaskManager();
+        }
+        return new KeyPress(vk, modifiers);
+    }
+
+    private const ushort VkEscape = 0x1B;
+
+    private static Modifiers ModifierFromName(string name) => name.ToLowerInvariant() switch
+    {
+        "ctrl" or "control" => Modifiers.Ctrl,
+        "alt" => Modifiers.Alt,
+        "shift" => Modifiers.Shift,
+        "win" or "meta" or "cmd" => Modifiers.Win,
+        _ => Modifiers.None,
+    };
+
     private static bool TryParseModifiers(JsonElement obj, out Modifiers modifiers)
     {
         modifiers = Modifiers.None;
@@ -160,14 +208,7 @@ public static class InputParser
             {
                 return false;
             }
-            Modifiers flag = item.GetString()!.ToLowerInvariant() switch
-            {
-                "ctrl" or "control" => Modifiers.Ctrl,
-                "alt" => Modifiers.Alt,
-                "shift" => Modifiers.Shift,
-                "win" or "meta" or "cmd" => Modifiers.Win,
-                _ => Modifiers.None,
-            };
+            Modifiers flag = ModifierFromName(item.GetString()!);
             if (flag == Modifiers.None)
             {
                 return false;
