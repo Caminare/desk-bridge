@@ -40,3 +40,10 @@ public sealed record RegistrationSnapshot(
     IReadOnlyList<MonitorModel> Monitors,
     int ActiveMonitor,
     string Os);
+
+/// <summary>Payload of <c>host:update</c>, sent after a monitor switch or a display change.</summary>
+public sealed record HostUpdatePayload(
+    int ScreenWidth,
+    int ScreenHeight,
+    int ActiveMonitor,
+    IReadOnlyList<MonitorModel> Monitors);

@@ -14,6 +14,7 @@ SetProcessDpiAwarenessContext
 SetThreadDpiAwarenessContext
 EnumDisplayMonitors
 GetMonitorInfo
+MONITORINFOEXW
 
 // --- Capture (GDI fallback) ---
 MonitorFromPoint

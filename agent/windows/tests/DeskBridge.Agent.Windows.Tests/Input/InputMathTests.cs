@@ -57,6 +57,28 @@ public class InputMathTests
         Assert.InRange(ay * 1079.0 / 65535.0, 539.5, 540.5);
     }
 
+    [Theory]
+    [InlineData(0.0, 0.0)]
+    [InlineData(0.5, 0.5)]
+    [InlineData(0.999, 0.999)]
+    public void Mixed_dpi_left_monitor_round_trip_lands_on_the_streamed_monitor(double nx, double ny)
+    {
+        // Laptop 2880x1800 at 150% is primary; an external 1920x1080 at 100% sits left of it and lower.
+        // Per-monitor DPI aware, both are physical pixels, so the virtual desktop is their plain union.
+        var external = new ScreenRect(-1920, 360, 1920, 1080);
+        var virtualScreen = new ScreenRect(-1920, 0, 1920 + 2880, 1800);
+
+        (int px, int py) = InputMath.NormalizedToPixel(nx, ny, external);
+        (int ax, int ay) = InputMath.PixelToAbsolute(px, py, virtualScreen);
+        double backX = virtualScreen.X + ax * (virtualScreen.Width - 1) / 65535.0;
+        double backY = virtualScreen.Y + ay * (virtualScreen.Height - 1) / 65535.0;
+
+        Assert.InRange(backX, px - 0.5, px + 0.5);
+        Assert.InRange(backY, py - 0.5, py + 0.5);
+        Assert.InRange(px, external.X, external.X + external.Width - 1);
+        Assert.InRange(py, external.Y, external.Y + external.Height - 1);
+    }
+
     [Fact]
     public void Pixels_left_of_the_virtual_desktop_clamp_to_zero()
     {

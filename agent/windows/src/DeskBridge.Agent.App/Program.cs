@@ -1,5 +1,6 @@
 using System.Reflection;
 using DeskBridge.Agent.App;
+using DeskBridge.Agent.Core.Displays;
 using DeskBridge.Agent.Core.Enrollment;
 using DeskBridge.Agent.Core.Input;
 using DeskBridge.Agent.Core.Relay;
@@ -80,42 +81,81 @@ static async Task<RelayStopReason> RunAgentAsync(AgentState state, IHostSecretSt
 {
     var options = new RelayOptions(state.RelayUri!, state.HostId, state.Name, state.GroupLabel);
 
-    using IFrameSource source = FrameSourceFactory.Create(log: Log);
+    // Streams the primary monitor until the controller picks another; follows display changes.
+    using var source = new SwitchableFrameSource(MonitorEnumerator.List, d => FrameSourceFactory.Create(d.Handle, Log), Log);
     using var encoder = new TurboJpegTileEncoder();
-    var (srcW, srcH) = source.SourceSize;
-    Log($"Capture: {source.Method} {srcW}x{srcH}. Host id {state.HostId}. Relay {state.RelayUri}");
+    Log($"Capture: {source.Method} {DescribeMonitor(source.Active)}. Host id {state.HostId}. Relay {state.RelayUri}");
 
-    // Phase 0 streams and controls the primary monitor, whose top-left is the virtual-desktop origin.
-    var injector = new InputInjector(() => (0, 0, source.SourceSize.Width, source.SourceSize.Height));
+    var injector = new InputInjector(() =>
+    {
+        DisplayInfo d = source.Active;
+        return (d.X, d.Y, d.Width, d.Height);
+    });
     using var input = new InputWorker(injector, ex => Log($"Input error: {ex.GetType().Name}"));
 
     var relay = new RelayClient(
         options,
         () =>
         {
-            var (w, h) = source.SourceSize;
-            return new RegistrationSnapshot(w, h, [new MonitorModel(0, 0, 0, w, h, true, "Primary")], 0, Environment.OSVersion.VersionString);
+            // Monitors may have changed while disconnected; a difference is sent as host:update right after.
+            source.RequestRefresh();
+            return source.Snapshot(Environment.OSVersion.VersionString);
         },
         secrets,
         new ClientWebSocketTransportFactory());
+    source.DisplaysChanged += () =>
+    {
+        Log($"Streaming {DescribeMonitor(source.Active)} ({source.Method}).");
+        _ = SendHostUpdateAsync(relay, source.Update());
+    };
 
     var ignoredInput = new IgnoredInputLog(Log);
     using CsvPerfLog? perfLog = perfLogPath is null ? null : CsvPerfLog.Create(perfLogPath);
     if (perfLog is not null) Log($"Writing per-frame timing to {Path.GetFullPath(perfLogPath!)}");
 
     var settings = new StreamSettings(state.MaxWidth, state.JpegQuality);
+    StreamingEngine? engineRef = null;
     using var engine = new StreamingEngine(relay, source, encoder, settings,
         payload =>
         {
-            if (InputParser.Parse(payload) is { } command) input.TryEnqueue(command);
-            else ignoredInput.Report(payload);
+            switch (InputParser.Parse(payload))
+            {
+                case SelectMonitor m:
+                    // Applied by the capture thread; wake it so the switch shows promptly.
+                    source.RequestMonitor(m.Index);
+                    engineRef?.NotifyInputApplied();
+                    break;
+                case { } command:
+                    input.TryEnqueue(command);
+                    break;
+                default:
+                    ignoredInput.Report(payload);
+                    break;
+            }
         },
         Log,
         perfLog is null ? null : new FramePerfOptions(perfLog, ThreadCycles.Current));
+    engineRef = engine;
     input.InputApplied += engine.NotifyInputApplied;
 
     Log("Running. Press Ctrl+C to stop.");
     return await engine.RunAsync(ct);
+}
+
+static string DescribeMonitor(DisplayInfo d) =>
+    $"{d.DeviceName} {d.Width}x{d.Height} at ({d.X},{d.Y}){(d.Primary ? " primary" : "")}";
+
+static async Task SendHostUpdateAsync(RelayClient relay, HostUpdatePayload update)
+{
+    try
+    {
+        await relay.SendEventAsync("host:update", update).ConfigureAwait(false);
+    }
+    catch (Exception ex)
+    {
+        // Offline: the next host:register carries the current monitors anyway.
+        Log($"host:update not sent: {ex.GetType().Name}");
+    }
 }
 
 static void Log(string message) => Console.WriteLine($"{DateTime.Now:HH:mm:ss} {message}");

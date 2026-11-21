@@ -34,6 +34,7 @@ public static class InputParser
             "type" => ParseType(payload),
             "key" => ParseKey(payload),
             "hotkey" => ParseHotkey(payload),
+            "monitor" => ParseMonitor(payload),
             _ => null,
         };
     }
@@ -58,6 +59,17 @@ public static class InputParser
             return null;
         }
         return new MouseMoveAbsolute(x, y);
+    }
+
+    private static InputCommand? ParseMonitor(JsonElement obj)
+    {
+        if (!obj.TryGetProperty("index", out JsonElement element) ||
+            element.ValueKind != JsonValueKind.Number ||
+            !element.TryGetInt32(out int index) || index < 0)
+        {
+            return null;
+        }
+        return new SelectMonitor(index);
     }
 
     private static InputCommand? ParseClick(JsonElement obj)
