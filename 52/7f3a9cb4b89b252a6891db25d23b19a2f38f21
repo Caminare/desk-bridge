@@ -1,0 +1,14 @@
+server/aiAssistant.ts
+  h_07bc29e988e787 1,42-43,53-56,72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "527f3a9cb4b89b252a6891db25d23b19a2f38f21",
+  "prompts": {},
+  "humans": {
+    "h_07bc29e988e787": {
+      "author": "Gabriel Vitor <c-gvitor@neogov.net>"
+    }
+  }
+}
