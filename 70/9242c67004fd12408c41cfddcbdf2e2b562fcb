@@ -1,0 +1,32 @@
+AGENTS.md
+  h_07bc29e988e787 142
+agent/windows/src/DeskBridge.Agent.App/Program.cs
+  h_07bc29e988e787 6,22-41,47-48,61-67
+agent/windows/src/DeskBridge.Agent.Core/Enrollment/AgentStateFile.cs
+  h_07bc29e988e787 7,18-19
+agent/windows/src/DeskBridge.Agent.Core/Power/KeepAwakeController.cs
+  h_07bc29e988e787 1-55
+agent/windows/src/DeskBridge.Agent.Windows/Host/PowerRequestHold.cs
+  h_07bc29e988e787 1-69
+agent/windows/src/DeskBridge.Agent.Windows/NativeMethods.txt
+  h_07bc29e988e787 45-51
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Enrollment/AgentStateFileTests.cs
+  h_07bc29e988e787 22-44
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Power/KeepAwakeControllerTests.cs
+  h_07bc29e988e787 1-54
+agent/windows/tests/DeskBridge.Agent.Windows.Tests/Host/PowerRequestHoldTests.cs
+  h_07bc29e988e787 1-22
+docs/specs/native-windows-agent.md
+  h_07bc29e988e787 90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "709242c67004fd12408c41cfddcbdf2e2b562fcb",
+  "prompts": {},
+  "humans": {
+    "h_07bc29e988e787": {
+      "author": "Gabriel Vitor <c-gvitor@neogov.net>"
+    }
+  }
+}
