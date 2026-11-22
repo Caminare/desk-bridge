@@ -242,6 +242,106 @@ describe('WebSocket host and controller protocol', () => {
     await h.until((s) => s.messages.some((m) => m.event === 'client:input' && m.payload.type === 'monitor'), 2000, 'input');
   });
 
+  const cursorShape = (id: string) => ({
+    id,
+    w: 2,
+    h: 2,
+    hotX: 1,
+    hotY: 0,
+    rgba: Buffer.alloc(16, 0xff).toString('base64'),
+  });
+  const fleetHost = (c: TestSocket, hostId: string) =>
+    ([...c.messages].reverse().find((m) => m.event === 'fleet:update')?.payload as unknown as Array<Record<string, any>>).find(
+      (x) => x.hostId === hostId,
+    );
+
+  test('a host advertising client cursor support is acknowledged and flagged in the fleet', async () => {
+    const { h: withCursor, hostId: cursorId } = await registerEnrolledHost('cursor-yes', { cursor: true });
+    const { h: without, hostId: plainId } = await registerEnrolledHost('cursor-no');
+    assert.equal(withCursor.event('host:registered')!.payload.clientCursor, true);
+    assert.notEqual(without.event('host:registered')!.payload.clientCursor, true);
+
+    const c = await openController();
+    assert.equal(fleetHost(c, cursorId)!.clientCursor, true);
+    assert.notEqual(fleetHost(c, plainId)!.clientCursor, true);
+
+    // A pairing-code refresh re-sends host:registered; it must not turn frame cursors back on.
+    withCursor.send('host:regenerate_code');
+    await withCursor.until((s) => s.messages.filter((m) => m.event === 'host:registered').length === 2, 2000, 'second registered');
+    assert.equal(withCursor.messages.filter((m) => m.event === 'host:registered')[1].payload.clientCursor, true);
+  });
+
+  test('cursor shape and position flow from the host to paired controllers; invalid ones are dropped', async () => {
+    const { h, hostId } = await registerEnrolledHost('cursor-flow', { cursor: true });
+    const c = await openController();
+    c.send('client:pair', { hostId });
+    await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
+
+    h.send('host:cursor_shape', { ...cursorShape('bad'), w: 500 });
+    h.send('host:cursor', { x: 'nope', y: 0, visible: true, shape: 'arrow' });
+    h.send('host:cursor_shape', cursorShape('arrow'));
+    h.send('host:cursor', { x: 0.5, y: 0.25, visible: true, shape: 'arrow' });
+    await c.until((s) => Boolean(s.event('host:cursor')), 2000, 'cursor position');
+
+    const shapes = c.messages.filter((m) => m.event === 'host:cursor_shape');
+    assert.equal(shapes.length, 1);
+    assert.deepEqual(shapes[0].payload, { hostId, ...cursorShape('arrow') });
+    const positions = c.messages.filter((m) => m.event === 'host:cursor');
+    assert.equal(positions.length, 1);
+    assert.deepEqual(positions[0].payload, { hostId, x: 0.5, y: 0.25, visible: true, shape: 'arrow' });
+  });
+
+  test('a controller pairing later gets the recent cursor shapes, then the position', async () => {
+    const { h, hostId } = await registerEnrolledHost('cursor-replay', { cursor: true });
+    h.send('host:cursor_shape', cursorShape('arrow'));
+    h.send('host:cursor_shape', cursorShape('ibeam'));
+    h.send('host:cursor', { x: 0.1, y: 0.2, visible: true, shape: 'ibeam' });
+    await sleep(100);
+
+    const c = await openController();
+    c.send('client:pair', { hostId });
+    await c.until((s) => Boolean(s.event('host:cursor')), 2000, 'replayed cursor');
+    const events = c.messages.filter((m) => m.event.startsWith('host:cursor'));
+    // Agents send each shape once per connection (animated cursors reuse them), so all recent ones are replayed.
+    assert.deepEqual(
+      events.map((m) => (m.event === 'host:cursor' ? 'pos' : m.payload.id)),
+      ['arrow', 'ibeam', 'pos'],
+    );
+    assert.equal(c.event('host:cursor')!.payload.x, 0.1);
+  });
+
+  test('the relay keeps at most 32 cursor shapes per host, dropping the least recently sent', async () => {
+    const { h, hostId } = await registerEnrolledHost('cursor-cache', { cursor: true });
+    for (let i = 0; i < 33; i++) h.send('host:cursor_shape', cursorShape(`s${i}`));
+    h.send('host:cursor_shape', cursorShape('s1')); // re-sent: becomes the most recent
+    h.send('host:cursor', { x: 0.5, y: 0.5, visible: true, shape: 's1' });
+    await sleep(150);
+
+    const c = await openController();
+    c.send('client:pair', { hostId });
+    await c.until((s) => Boolean(s.event('host:cursor')), 2000, 'replayed cursor');
+    const ids = c.messages.filter((m) => m.event === 'host:cursor_shape').map((m) => m.payload.id);
+    assert.equal(ids.length, 32);
+    assert.ok(!ids.includes('s0'), 'oldest evicted');
+    assert.equal(ids[0], 's2', 's1 moved to the end when re-sent');
+    assert.equal(ids[ids.length - 1], 's1');
+  });
+
+  test('a host cannot send cursor messages into another host stream', async () => {
+    const { hostId: victimId } = await registerEnrolledHost('cursor-victim', { cursor: true });
+    const { h: attacker } = await registerEnrolledHost('cursor-attacker', { cursor: true });
+    const c = await openController();
+    c.send('client:pair', { hostId: victimId });
+    await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
+
+    attacker.send('host:cursor_shape', { hostId: victimId, ...cursorShape('evil') });
+    attacker.send('host:cursor', { hostId: victimId, x: 0.5, y: 0.5, visible: true, shape: 'evil' });
+    const anon = await open();
+    anon.send('host:cursor', { hostId: victimId, x: 0.5, y: 0.5, visible: true, shape: null });
+    await sleep(200);
+    assert.equal(c.messages.filter((m) => m.event.startsWith('host:cursor')).length, 0);
+  });
+
   test('oversized messages close the socket without crashing the relay', async () => {
     const big = await open();
     big.ws.send(Buffer.alloc(9 * 1024 * 1024));
