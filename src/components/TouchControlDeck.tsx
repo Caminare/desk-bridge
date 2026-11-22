@@ -27,11 +27,13 @@ import { QUALITY_OPTIONS, QUALITY_PRESETS, type StreamQualityPreset } from './co
 import { StreamViewport } from './controlDeck/StreamViewport';
 import { TrackpadPanel, type PointerHandlers } from './controlDeck/TrackpadPanel';
 import { registerPointerDown } from '../lib/activePointers';
+import type { RemoteCursorStore } from '../lib/remoteCursor';
 
 interface TouchControlDeckProps {
   hosts: HostProfile[];
   activeHost: HostProfile | null;
   frameStore: FrameStore;
+  cursorStore: RemoteCursorStore;
   onSelectHost: (hostId: string) => void;
   onSendInput: (input: RemoteInputEvent, targetHostId?: string, source?: 'touch' | 'keyboard') => void;
   onOpenQrScanner: () => void;
@@ -44,6 +46,7 @@ export function TouchControlDeck({
   hosts,
   activeHost,
   frameStore,
+  cursorStore,
   onSelectHost,
   onSendInput,
   onOpenQrScanner,
@@ -813,6 +816,7 @@ export function TouchControlDeck({
       <StreamViewport
         host={activeHost}
         frameStore={frameStore}
+        cursorStore={cursorStore}
         fullscreen={fullscreen}
         showStats={showStats}
         view={view}
