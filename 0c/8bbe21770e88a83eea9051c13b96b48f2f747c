@@ -1,0 +1,32 @@
+server/relay.ts
+  e3e6b95be63429a3 859
+  e3e6b95be63429a3 856-858
+  e3e6b95be63429a3 860-862
+tests/relay.test.ts
+  e3e6b95be63429a3 245-344
+tests/cursorMessages.test.ts
+  e3e6b95be63429a3 1-71
+src/types/deskbridge.ts
+  e3e6b95be63429a3 33-62
+server/cursorMessages.ts
+  e3e6b95be63429a3 1-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0c8bbe21770e88a83eea9051c13b96b48f2f747c",
+  "prompts": {
+    "e3e6b95be63429a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1ebea8-846b-4155-8789-87f945883b29",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 2157,
+      "total_deletions": 942,
+      "accepted_lines": 2157,
+      "overriden_lines": 0
+    }
+  }
+}
