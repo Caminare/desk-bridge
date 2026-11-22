@@ -57,6 +57,10 @@ npm start            # NODE_ENV=production tsx server.ts (serves dist/)
 
 If you change dependencies, run `bun install` so `bun.lock` stays in sync. CI uses `--frozen-lockfile`.
 
+### Releasing the Windows agent
+
+Push a tag `agent-vX.Y.Z` (for example `git tag agent-v0.2.0 && git push origin agent-v0.2.0`). The `Agent (Windows)` workflow tests, runs `agent/windows/eng/package-release.ps1 -Version X.Y.Z` and publishes `deskbridge-agent-win-x64.zip` (exe plus `THIRD-PARTY-NOTICES.txt` and `licenses/`) as a GitHub release. The version comes only from the tag; local builds report `0.0.0-dev`, CI builds `0.0.0-ci`. A tag with a suffix (`-rc.1`) becomes a prerelease and never "latest". The Windows Host tab links to `releases/latest/download/deskbridge-agent-win-x64.zip`, so keep that asset name. A new bundled dependency needs its license added to `agent/windows/licenses/`, `THIRD-PARTY-NOTICES.txt` and the script.
+
 ### Testing
 
 - Every server behavior change needs a test in `tests/`. Use `startTestRelay()` from `tests/helpers.ts`, not a real port or the repo's data files.

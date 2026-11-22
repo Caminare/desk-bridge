@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AnalysisLevel>latest</AnalysisLevel>
+    <!-- Releases override this from the agent-vX.Y.Z tag (eng/package-release.ps1); local builds stay recognisable. -->
+    <Version>0.0.0-dev</Version>
   </PropertyGroup>
 
 </Project>
