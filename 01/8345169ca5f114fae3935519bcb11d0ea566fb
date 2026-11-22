@@ -1,0 +1,38 @@
+agent/windows/src/DeskBridge.Agent.Core/Cursor/CursorShapeConverter.cs
+  e3e6b95be63429a3 1-132
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Cursor/CursorPublisherTests.cs
+  e3e6b95be63429a3 1-167
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Relay/RelayClientTests.cs
+  e3e6b95be63429a3 162,195-203
+  e3e6b95be63429a3 204-205
+agent/windows/src/DeskBridge.Agent.Core/Cursor/CursorTypes.cs
+  e3e6b95be63429a3 1-27
+agent/windows/src/DeskBridge.Agent.Core/Cursor/CursorPublisher.cs
+  e3e6b95be63429a3 1-96
+  e3e6b95be63429a3 97-99
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Cursor/CursorShapeConverterTests.cs
+  e3e6b95be63429a3 1-120
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Displays/SwitchableFrameSourceTests.cs
+  e3e6b95be63429a3 190-202
+  e3e6b95be63429a3 189
+  e3e6b95be63429a3 203-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "018345169ca5f114fae3935519bcb11d0ea566fb",
+  "prompts": {
+    "e3e6b95be63429a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1ebea8-846b-4155-8789-87f945883b29",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 527,
+      "overriden_lines": 0
+    }
+  }
+}
