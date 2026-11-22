@@ -15,7 +15,7 @@
 #   - Node.js 22 (NodeSource), git, Caddy (automatic HTTPS), ufw firewall (22/80/443)
 #   - a swap file on small servers (building the web app needs more than 1 GB RAM)
 #   - a dedicated `deskbridge` system user; code in /opt/deskbridge/app,
-#     state (access token, enrollment key, paired hosts) in /var/lib/deskbridge
+#     state (access token, paired hosts) in /var/lib/deskbridge
 #   - /etc/deskbridge.env (APP_URL, generated DESKBRIDGE_ACCESS_TOKEN, ...)
 #   - systemd service `deskbridge` listening on 127.0.0.1:3000 behind Caddy
 set -euo pipefail
@@ -225,8 +225,8 @@ cat <<EOF
 
  Next:
   1. Open the URL on your phone and sign in with the token.
-  2. On each Windows PC, open the URL, go to the Windows Host tab and
-     download DeskBridge-Host.ps1 again (it embeds this server's address).
+  2. On each Windows PC, open the URL, go to the Windows Host tab to download
+     the DeskBridge agent and create a one-time enrollment link.
 
  Useful commands:
   journalctl -u deskbridge -f        live relay logs

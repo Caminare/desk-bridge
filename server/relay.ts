@@ -6,11 +6,6 @@ import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import QRCode from 'qrcode';
 import {
-  generateBatchLauncher,
-  generateNodeHostScript,
-  generatePowerShellHostScript,
-} from './windowsAgentGenerator.js';
-import {
   GeminiUnavailableError,
   describeError,
   transcribeDictation,
@@ -517,37 +512,6 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     }
   });
 
-  app.get('/api/host-agent/download', (req, res) => {
-    const format = String(req.query.format || 'ps1');
-    const hostName = String(req.query.name || 'Windows-PC');
-    const groupLabel = String(req.query.group || req.query.job || 'Workstation');
-    const { appUrl, wsUrl } = getBaseUrls(req);
-    // Agent scripts embed the enrollment key: never let proxies or browsers cache them.
-    res.setHeader('Cache-Control', 'no-store');
-
-    if (format === 'bat') {
-      const content = generateBatchLauncher();
-      res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Disposition', 'attachment; filename="Start-DeskBridge.bat"');
-      res.send(content);
-      return;
-    }
-
-    if (format === 'mjs') {
-      const content = generateNodeHostScript({ wsUrl, appUrl, hostName, groupLabel, enrollKey: auth.enrollKey });
-      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-      res.setHeader('Content-Disposition', 'attachment; filename="deskbridge-host.mjs"');
-      res.send(content);
-      return;
-    }
-
-    const keepAwake = req.query.keepAwake === '1';
-    const content = generatePowerShellHostScript({ wsUrl, appUrl, hostName, groupLabel, enrollKey: auth.enrollKey, keepAwake });
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="DeskBridge-Host.ps1"');
-    res.send(content);
-  });
-
   app.post('/api/ai/transcribe', async (req, res) => {
     try {
       const { audioBase64, mimeType } = (req.body ?? {}) as { audioBase64?: unknown; mimeType?: unknown };
@@ -615,7 +579,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
     controllerHostMap.set(ws, new Set());
 
     // Controllers must hold an owner session cookie from this origin. Unauthenticated
-    // sockets may only register as a host agent using the enrollment key.
+    // sockets may only register as an enrolled host agent using its per-host secret.
     const isOwner = isSameOrigin(req) && isRequestAuthenticated(auth, req);
 
     // Without an error listener, a protocol error (e.g. an oversized frame) throws and
@@ -715,12 +679,9 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
 
       if (event === 'host:register') {
         const requestedId = typeof payload.hostId === 'string' ? payload.hostId : '';
-        // Native agents enrolled with a one-time code hold only a host secret. The shared
-        // enrollment key is for the PowerShell agent and goes away with it (T9).
-        const hasEnrollKey = safeEqual(payload.enrollKey, auth.enrollKey);
-        if (!isOwner && !hasEnrollKey) {
+        if (!isOwner) {
           if (typeof payload.hostSecret !== 'string' || !payload.hostSecret) {
-            rejectHost('Invalid or missing enrollment key. Download a fresh agent script from the DeskBridge Host tab.');
+            rejectHost('Missing host secret. Enroll this PC with a one-time link from the Windows Host tab.');
             return;
           }
           if (!hosts.get(requestedId)?.secretHash) {
@@ -737,18 +698,12 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
         const hostId = HOST_ID_PATTERN.test(requestedId) ? requestedId : `pc-${crypto.randomUUID().slice(0, 8)}`;
         const existing = hosts.get(hostId);
 
-        // A host id that already has a secret can only be reclaimed by the agent that
-        // holds it (or by the logged-in owner running browser host mode).
-        let issuedSecret: string | undefined;
-        let secretHash = existing?.secretHash;
-        if (secretHash) {
-          if (!isOwner && !verifySecret(payload.hostSecret, secretHash)) {
-            rejectHost('Host secret mismatch for this host id. Delete the host from the Fleet tab to re-enroll it.');
-            return;
-          }
-        } else if (!isOwner) {
-          issuedSecret = generateHostSecret();
-          secretHash = hashSecret(issuedSecret);
+        // A host id with a secret can only be reclaimed by the agent holding it
+        // (or by the logged-in owner running browser host mode).
+        const secretHash = existing?.secretHash;
+        if (secretHash && !isOwner && !verifySecret(payload.hostSecret, secretHash)) {
+          rejectHost('Host secret mismatch for this host id. Re-enroll this PC or delete it from the Fleet tab.');
+          return;
         }
 
         if (existing?.ws && existing.ws !== ws && existing.ws.readyState === WebSocket.OPEN) {
@@ -800,7 +755,6 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           pairingCode,
           pairingUrl,
           controllerCount: controllers.size,
-          ...(issuedSecret ? { hostSecret: issuedSecret } : {}),
         });
         sendJson(ws, 'host:controller_count', { count: controllers.size });
         broadcastFleet();

@@ -1,6 +1,6 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { TestSocket, getEnrollKey, loginCookie, startTestRelay, type TestRelay } from './helpers.js';
+import { TestSocket, loginCookie, startTestRelay, type TestRelay } from './helpers.js';
 
 type Json = Record<string, any>;
 
@@ -136,10 +136,10 @@ describe('Agent enrollment with one-time codes', () => {
     assert.notEqual(data.hostId, 'gone-host');
   });
 
-  test('the enrollment-key path still works for the PowerShell agent', async () => {
-    const enrollKey = await getEnrollKey(t.base, cookie);
-    const h = await register({ hostId: 'ps-agent', name: 'PS', enrollKey });
-    assert.ok(h.event('host:registered')?.payload.hostSecret);
+  test('registering with only a legacy enrollKey is rejected with 4401', async () => {
+    const h = await register({ hostId: 'ps-agent', name: 'PS', enrollKey: 'legacy-key' });
+    assert.equal(h.closeCode, 4401);
+    assert.ok(h.event('host:auth_error'));
   });
 
   test('opening the link in a browser shows instructions and does not consume the code', async () => {

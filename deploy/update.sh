@@ -47,7 +47,7 @@ main() {
   systemctl --no-pager --lines=5 status deskbridge || true
   echo
   echo "Updated to $(sudo -u "$APP_USER" git -C "$APP_DIR" log -1 --format='%h %s')."
-  echo "If the agent changed, re-download DeskBridge-Host.ps1 on each PC."
+  echo "If a new Windows agent release was published, download it from the Windows Host tab on each PC."
 }
 
 main "$@"
