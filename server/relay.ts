@@ -29,7 +29,8 @@ import {
   SESSION_COOKIE,
   verifySecret,
 } from './auth.js';
-import type { HostProfile, MonitorInfo, RemoteInputEvent } from '../src/types/deskbridge.js';
+import type { CursorPosition, CursorShape, HostProfile, MonitorInfo, RemoteInputEvent } from '../src/types/deskbridge.js';
+import { sanitizeCursorPosition, sanitizeCursorShape } from './cursorMessages.js';
 
 export interface RelayOptions {
   /** Port to listen on; 0 picks a free port. Default 3000. */
@@ -117,11 +118,24 @@ interface HostConnection {
   lastKeyRequestAt: number;
   /** Adaptive quality controller, fed by the RTT the agent reports in v2 frame headers. */
   adaptive: AdaptiveQuality;
+  /**
+   * Recent cursor shapes (least recently sent first) and the latest position, replayed to newly paired
+   * controllers. Agents send each shape once per connection, so animated cursors need all recent ones.
+   */
+  cursorShapes?: Map<string, CursorShape>;
+  cursorPosition?: CursorPosition;
+  /** Backed-up controllers waiting for the latest position; `true` when they also missed shapes. */
+  cursorStale?: Map<WebSocket, boolean>;
+  cursorFlushTimer?: NodeJS.Timeout;
 }
 
 /** Skip frames for a controller whose socket already has this much queued. */
 const CONTROLLER_BACKLOG_LIMIT = 512 * 1024;
 const KEYFRAME_REQUEST_INTERVAL_MS = 300;
+/** How often skipped cursor messages are retried for a backed-up controller. */
+const CURSOR_RETRY_MS = 50;
+/** Cursor shapes kept per host; matches the agent's and controller's caches. */
+const MAX_CURSOR_SHAPES = 32;
 
 type StoredHost = HostProfile & { secretHash?: string };
 
@@ -211,6 +225,36 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
         if (a.status !== 'online' && b.status === 'online') return 1;
         return b.lastSeen - a.lastSeen;
       });
+  }
+
+  /**
+   * Sends the host's cursor to one controller: all cached shapes first when `withShapes`, then the latest
+   * position. A backed-up controller is skipped and retried, because a queue of stale cursor messages is
+   * worse than none; it then gets the current state instead of everything it missed.
+   */
+  function sendCursor(entry: HostConnection, ctrl: WebSocket, withShapes: boolean) {
+    if (ctrl.readyState !== WebSocket.OPEN) return;
+    if (ctrl.bufferedAmount >= CONTROLLER_BACKLOG_LIMIT) {
+      const stale = (entry.cursorStale ??= new Map());
+      stale.set(ctrl, withShapes || stale.get(ctrl) === true);
+      if (!entry.cursorFlushTimer) {
+        entry.cursorFlushTimer = setTimeout(() => {
+          entry.cursorFlushTimer = undefined;
+          const pending = entry.cursorStale;
+          entry.cursorStale = undefined;
+          for (const [c, shapes] of pending ?? []) if (entry.controllers.has(c)) sendCursor(entry, c, shapes);
+        }, CURSOR_RETRY_MS);
+        entry.cursorFlushTimer.unref();
+      }
+      return;
+    }
+    const missedShapes = entry.cursorStale?.get(ctrl) === true;
+    entry.cursorStale?.delete(ctrl);
+    const hostId = entry.profile.hostId;
+    if (withShapes || missedShapes) {
+      for (const shape of entry.cursorShapes?.values() ?? []) sendJson(ctrl, 'host:cursor_shape', { hostId, ...shape });
+    }
+    if (entry.cursorPosition) sendJson(ctrl, 'host:cursor', { hostId, ...entry.cursorPosition });
   }
 
   function sendJson(ws: WebSocket | null, event: string, payload: unknown) {
@@ -709,6 +753,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
         if (existing?.ws && existing.ws !== ws && existing.ws.readyState === WebSocket.OPEN) {
           existing.ws.close(4409, 'Replaced by a newer host connection');
         }
+        if (existing?.cursorFlushTimer) clearTimeout(existing.cursorFlushTimer);
         const pairingCode = existing?.profile.pairingCode || generatePairingCode();
         const pairingUrl = `${baseUrl}/?pair=${pairingCode}&host=${encodeURIComponent(hostId)}`;
 
@@ -729,6 +774,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           memoryUsage: Number(payload.memoryUsage ?? 42),
           connectedControllers: existing?.controllers.size ?? 0,
         };
+        if (payload.cursor === true) profile.clientCursor = true;
         const monitors = sanitizeMonitors(payload.monitors);
         if (monitors) {
           profile.monitors = monitors;
@@ -755,6 +801,8 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           pairingCode,
           pairingUrl,
           controllerCount: controllers.size,
+          // The agent only stops drawing the cursor into frames once the relay confirms its controllers draw it.
+          ...(profile.clientCursor ? { clientCursor: true } : {}),
         });
         sendJson(ws, 'host:controller_count', { count: controllers.size });
         broadcastFleet();
@@ -781,6 +829,37 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
         return;
       }
 
+      if (event === 'host:cursor_shape' && ownedHostId) {
+        const entry = hosts.get(ownedHostId);
+        if (!entry || entry.ws !== ws) return;
+        const shape = sanitizeCursorShape(payload);
+        if (!shape) return;
+        const shapes = (entry.cursorShapes ??= new Map());
+        shapes.delete(shape.id); // re-insert as the most recent
+        shapes.set(shape.id, shape);
+        if (shapes.size > MAX_CURSOR_SHAPES) shapes.delete(shapes.keys().next().value!);
+        for (const ctrl of entry.controllers) {
+          if (ctrl.readyState !== WebSocket.OPEN) continue;
+          if (ctrl.bufferedAmount >= CONTROLLER_BACKLOG_LIMIT) {
+            // Not lost: a backed-up controller gets every cached shape once it catches up.
+            sendCursor(entry, ctrl, true);
+            continue;
+          }
+          sendJson(ctrl, 'host:cursor_shape', { hostId: ownedHostId, ...shape });
+        }
+        return;
+      }
+
+      if (event === 'host:cursor' && ownedHostId) {
+        const entry = hosts.get(ownedHostId);
+        if (!entry || entry.ws !== ws) return;
+        const position = sanitizeCursorPosition(payload);
+        if (!position) return;
+        entry.cursorPosition = position;
+        for (const ctrl of entry.controllers) sendCursor(entry, ctrl, false);
+        return;
+      }
+
       if (event === 'host:regenerate_code' && ownedHostId) {
         const entry = hosts.get(ownedHostId);
         if (!entry || entry.ws !== ws) return;
@@ -794,6 +873,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           pairingCode,
           pairingUrl,
           controllerCount: entry.controllers.size,
+          ...(entry.profile.clientCursor ? { clientCursor: true } : {}),
         });
         broadcastFleet();
         return;
@@ -884,6 +964,7 @@ export async function createRelay(opts: RelayOptions): Promise<RelayHandle> {
           },
           latestFrame: getLatestFrameDataUrl(entry) || null,
         });
+        sendCursor(entry, ws, true);
         sendJson(entry.ws, 'host:controller_count', { count: entry.controllers.size });
         broadcastFleet();
         return;

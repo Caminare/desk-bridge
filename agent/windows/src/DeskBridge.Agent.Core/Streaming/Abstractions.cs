@@ -1,4 +1,5 @@
 using System.Buffers;
+using DeskBridge.Agent.Core.Cursor;
 
 namespace DeskBridge.Agent.Core.Streaming;
 
@@ -41,6 +42,15 @@ public interface IFrameSource : IDisposable
 
     /// <summary>Size of the captured monitor in physical pixels.</summary>
     (int Width, int Height) SourceSize { get; }
+
+    /// <summary>The pointer as of the last <see cref="TryCapture"/> call. Read on the capture thread.</summary>
+    CursorSnapshot Cursor { get; }
+
+    /// <summary>
+    /// Draw the pointer into frames (default). False when the controllers draw it from cursor messages;
+    /// then pointer-only changes produce no frame. Safe to set from any thread.
+    /// </summary>
+    bool DrawCursor { get; set; }
 
     /// <summary>
     /// Waits up to <paramref name="timeout"/> for a desktop update and returns it scaled to

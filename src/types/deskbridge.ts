@@ -30,6 +30,36 @@ export interface HostProfile {
   monitors?: MonitorInfo[];
   /** Index into `monitors` currently being streamed. */
   activeMonitor?: number;
+  /**
+   * The agent sends its cursor as `host:cursor` / `host:cursor_shape` instead of drawing it
+   * into frames, so the controller must draw it.
+   */
+  clientCursor?: boolean;
+}
+
+/**
+ * Cursor image sent by the agent when the shape changes. `rgba` is base64 of w*h*4 bytes,
+ * straight (non-premultiplied) RGBA, rows top-down. `id` is a hash of the pixels. Sizes and the
+ * hotspot are in the PC's physical pixels.
+ */
+export interface CursorShape {
+  id: string;
+  w: number;
+  h: number;
+  hotX: number;
+  hotY: number;
+  rgba: string;
+}
+
+/**
+ * Cursor position normalized (0..1) on the streamed monitor. Values outside 0..1 mean the
+ * cursor is on another monitor. `shape` is the id of the current `CursorShape`.
+ */
+export interface CursorPosition {
+  x: number;
+  y: number;
+  visible: boolean;
+  shape: string | null;
 }
 
 export type RemoteInputEvent =

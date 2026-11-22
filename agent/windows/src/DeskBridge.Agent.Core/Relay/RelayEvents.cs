@@ -4,7 +4,8 @@ namespace DeskBridge.Agent.Core.Relay;
 
 public abstract record RelayEvent;
 
-public sealed record RegisteredEvent(string HostId, string PairingCode, string PairingUrl, int ControllerCount) : RelayEvent;
+/// <param name="ClientCursor">The relay's controllers draw the cursor from <c>host:cursor</c> messages, so frames must not contain it.</param>
+public sealed record RegisteredEvent(string HostId, string PairingCode, string PairingUrl, int ControllerCount, bool ClientCursor = false) : RelayEvent;
 
 public sealed record ControllerCountEvent(int Count) : RelayEvent;
 

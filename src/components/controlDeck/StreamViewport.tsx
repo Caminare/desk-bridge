@@ -2,15 +2,18 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Monitor } from 'lucide-react';
 import type { HostProfile } from '../../types/deskbridge';
 import type { FrameStore } from '../../lib/frameCompositor';
+import type { RemoteCursorStore } from '../../lib/remoteCursor';
 import { viewToCss, type ContentBounds, type ViewState } from '../../lib/viewTransform';
 import { LiveStreamCanvas } from '../LiveStreamCanvas';
 import { StreamStatsOverlay } from './StreamStatsOverlay';
 import { ZoomMinimap } from './ZoomMinimap';
+import { RemoteCursorOverlay } from './RemoteCursorOverlay';
 import type { PointerHandlers } from './TrackpadPanel';
 
 interface StreamViewportProps {
   host: HostProfile;
   frameStore: FrameStore;
+  cursorStore: RemoteCursorStore;
   fullscreen: boolean;
   view: ViewState;
   /** Where the letterboxed picture sits inside the viewport (normalized). */
@@ -37,6 +40,7 @@ interface StreamViewportProps {
 export function StreamViewport({
   host,
   frameStore,
+  cursorStore,
   fullscreen,
   view,
   bounds,
@@ -145,6 +149,10 @@ export function StreamViewport({
               </div>
             }
           />
+
+          {host.clientCursor && (
+            <RemoteCursorOverlay store={cursorStore} host={host} bounds={bounds} zoom={view.zoom} viewportRef={viewportRef} />
+          )}
 
           {tapFeedback && (
             <div

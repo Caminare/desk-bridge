@@ -1,3 +1,4 @@
+using DeskBridge.Agent.Core.Cursor;
 using DeskBridge.Agent.Core.Displays;
 using DeskBridge.Agent.Core.Streaming;
 using Xunit;
@@ -16,6 +17,8 @@ public class SwitchableFrameSourceTests
         public bool Disposed { get; private set; }
         public string Method => "fake";
         public (int Width, int Height) SourceSize => (Display.Width, Display.Height);
+        public CursorSnapshot Cursor { get; set; }
+        public bool DrawCursor { get; set; } = true;
         public CaptureResult TryCapture(int targetWidth, int targetHeight, TimeSpan timeout, bool forceFrame) =>
             new(NextStatus, default, null, 0);
         public void Dispose() => Disposed = true;
@@ -181,6 +184,22 @@ public class SwitchableFrameSourceTests
         var s = rig.Source.Snapshot("Windows");
         Assert.Equal(1, s.ActiveMonitor);
         Assert.Equal(1920, s.ScreenWidth);
+    }
+
+    [Fact]
+    public void Cursor_drawing_follows_the_setting_across_monitor_switches_and_cursor_reads_the_current_source()
+    {
+        var rig = new Rig();
+        rig.Source.DrawCursor = false;
+        Assert.False(rig.Current.DrawCursor);
+
+        rig.Source.RequestMonitor(1);
+        rig.Capture();
+        Assert.Equal(External, rig.Current.Display);
+        Assert.False(rig.Current.DrawCursor);
+
+        rig.Current.Cursor = new CursorSnapshot(true, 7, 9, null);
+        Assert.Equal(7, rig.Source.Cursor.X);
     }
 
     [Fact]

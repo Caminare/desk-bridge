@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Runtime.InteropServices;
+using DeskBridge.Agent.Core.Cursor;
 using DeskBridge.Agent.Core.Streaming;
 using Windows.Win32;
 using Windows.Win32.Foundation;
@@ -10,7 +11,7 @@ namespace DeskBridge.Agent.Windows.Capture;
 
 /// <summary>
 /// Fallback capture: one HALFTONE <c>StretchBlt</c> from the screen DC into a top-down 32-bit DIB
-/// section of the stream size, then the pointer via <c>DrawIconEx</c>. GDI has no change
+/// section of the stream size, then (unless the controllers draw it) the pointer via <c>DrawIconEx</c>. GDI has no change
 /// notification, so a non-forced call sleeps for <c>timeout</c> (acting as the frame pacer) and then
 /// always returns a frame with unknown dirty rects.
 /// </summary>
@@ -31,6 +32,10 @@ public sealed unsafe class GdiFrameSource : IFrameSource
 
     private HCURSOR _cachedCursor;
     private (int X, int Y) _cachedHotspot;
+    private CursorShapeData? _cursorShape;
+    private CursorSnapshot _cursor;
+    private CURSORINFO _cursorInfo;
+    private volatile bool _drawCursor = true;
 
     /// <param name="monitor">HMONITOR to capture; 0 selects the primary monitor.</param>
     public GdiFrameSource(nint monitor = 0)
@@ -49,6 +54,14 @@ public sealed unsafe class GdiFrameSource : IFrameSource
     public string Method => "gdi";
 
     public (int Width, int Height) SourceSize => (_srcW, _srcH);
+
+    public CursorSnapshot Cursor => _cursor;
+
+    public bool DrawCursor
+    {
+        get => _drawCursor;
+        set => _drawCursor = value;
+    }
 
     public CaptureResult TryCapture(int targetWidth, int targetHeight, TimeSpan timeout, bool forceFrame)
     {
@@ -72,7 +85,8 @@ public sealed unsafe class GdiFrameSource : IFrameSource
             PInvoke.ReleaseDC(HWND.Null, screen);
         }
 
-        DrawCursor(targetWidth, targetHeight);
+        ReadCursor();
+        if (_drawCursor) DrawPointer(targetWidth, targetHeight);
         _clock.Stop();
         return new CaptureResult(CaptureStatus.Frame, new FrameImage(_memory!.Memory, targetWidth, targetHeight, targetWidth * 4), null, _clock.Elapsed.TotalMilliseconds);
     }
@@ -108,22 +122,112 @@ public sealed unsafe class GdiFrameSource : IFrameSource
         _targetH = h;
     }
 
-    private void DrawCursor(int targetW, int targetH)
+    private void ReadCursor()
     {
-        CURSORINFO ci = new() { cbSize = (uint)sizeof(CURSORINFO) };
-        if (!PInvoke.GetCursorInfo(ref ci) || (ci.flags & CURSORINFO_FLAGS.CURSOR_SHOWING) == 0 || ci.hCursor.IsNull) return;
-
-        if (ci.hCursor != _cachedCursor)
+        _cursorInfo = new CURSORINFO { cbSize = (uint)sizeof(CURSORINFO) };
+        if (!PInvoke.GetCursorInfo(ref _cursorInfo))
+        {
+            _cursor = _cursor with { Visible = false };
+            return;
+        }
+        bool showing = (_cursorInfo.flags & CURSORINFO_FLAGS.CURSOR_SHOWING) != 0 && !_cursorInfo.hCursor.IsNull;
+        if (showing && _cursorInfo.hCursor != _cachedCursor)
         {
             _cachedHotspot = (0, 0);
-            if (PInvoke.GetIconInfo(new BorrowedHandle((nint)ci.hCursor.Value), out ICONINFO ii))
+            _cursorShape = null;
+            if (PInvoke.GetIconInfo(new BorrowedHandle((nint)_cursorInfo.hCursor.Value), out ICONINFO ii))
             {
                 _cachedHotspot = ((int)ii.xHotspot, (int)ii.yHotspot);
-                if (!ii.hbmMask.IsNull) PInvoke.DeleteObject(ii.hbmMask);
-                if (!ii.hbmColor.IsNull) PInvoke.DeleteObject(ii.hbmColor);
+                try
+                {
+                    _cursorShape = ReadShape(ii);
+                }
+                finally
+                {
+                    if (!ii.hbmMask.IsNull) PInvoke.DeleteObject(ii.hbmMask);
+                    if (!ii.hbmColor.IsNull) PInvoke.DeleteObject(ii.hbmColor);
+                }
             }
-            _cachedCursor = ci.hCursor;
+            _cachedCursor = _cursorInfo.hCursor;
         }
+        // ptScreenPos is the hotspot in virtual-screen coordinates.
+        _cursor = new CursorSnapshot(showing, _cursorInfo.ptScreenPos.X - _srcX, _cursorInfo.ptScreenPos.Y - _srcY, _cursorShape);
+    }
+
+    /// <summary>
+    /// Reads a cursor's bitmaps into the DXGI shape layouts: 32 bpp colour with alpha, colour plus AND mask
+    /// (as masked colour), or a monochrome AND/XOR mask pair.
+    /// </summary>
+    private CursorShapeData? ReadShape(in ICONINFO ii)
+    {
+        HDC screen = PInvoke.GetDC(HWND.Null);
+        try
+        {
+            if (ii.hbmColor.IsNull)
+            {
+                if (!BitmapSize(ii.hbmMask, out int mw, out int mh)) return null;
+                byte[]? mono = ReadBits(screen, ii.hbmMask, mw, mh, 1, out int monoPitch);
+                return mono is null ? null : CursorShapeConverter.TryConvert(CursorShapeType.Monochrome, mono, mw, mh, monoPitch, _cachedHotspot.X, _cachedHotspot.Y);
+            }
+
+            if (!BitmapSize(ii.hbmColor, out int w, out int h)) return null;
+            byte[]? color = ReadBits(screen, ii.hbmColor, w, h, 32, out int pitch);
+            if (color is null) return null;
+            bool hasAlpha = false;
+            for (int i = 3; i < color.Length && !hasAlpha; i += 4) hasAlpha = color[i] != 0;
+            if (hasAlpha) return CursorShapeConverter.TryConvert(CursorShapeType.Color, color, w, h, pitch, _cachedHotspot.X, _cachedHotspot.Y);
+
+            // No alpha: the AND mask says which pixels replace the screen and which XOR into it.
+            if (ii.hbmMask.IsNull) return null;
+            byte[]? mask = ReadBits(screen, ii.hbmMask, w, h, 1, out int maskPitch);
+            if (mask is null) return null;
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    color[y * pitch + x * 4 + 3] = (mask[y * maskPitch + (x >> 3)] & (0x80 >> (x & 7))) != 0 ? (byte)0xFF : (byte)0;
+            return CursorShapeConverter.TryConvert(CursorShapeType.MaskedColor, color, w, h, pitch, _cachedHotspot.X, _cachedHotspot.Y);
+        }
+        finally
+        {
+            PInvoke.ReleaseDC(HWND.Null, screen);
+        }
+    }
+
+    private static bool BitmapSize(HBITMAP bitmap, out int width, out int height)
+    {
+        BITMAP bm = default;
+        width = height = 0;
+        if (PInvoke.GetObject(bitmap, sizeof(BITMAP), &bm) == 0 || bm.bmWidth <= 0 || bm.bmHeight <= 0) return false;
+        width = bm.bmWidth;
+        height = bm.bmHeight;
+        return true;
+    }
+
+    /// <summary>Top-down DIB bits at <paramref name="bitCount"/> bpp (1 or 32); rows are DWORD aligned.</summary>
+    private static byte[]? ReadBits(HDC dc, HBITMAP bitmap, int width, int height, ushort bitCount, out int pitch)
+    {
+        pitch = ((width * bitCount + 31) / 32) * 4;
+        var bits = new byte[pitch * height];
+        // Room for the header plus a two-entry colour table (needed for 1 bpp).
+        byte* info = stackalloc byte[sizeof(BITMAPINFOHEADER) + 2 * 4];
+        new Span<byte>(info, sizeof(BITMAPINFOHEADER) + 8).Clear();
+        var header = (BITMAPINFOHEADER*)info;
+        header->biSize = (uint)sizeof(BITMAPINFOHEADER);
+        header->biWidth = width;
+        header->biHeight = -height; // top-down
+        header->biPlanes = 1;
+        header->biBitCount = bitCount;
+        header->biCompression = 0; // BI_RGB
+        fixed (byte* p = bits)
+        {
+            int lines = PInvoke.GetDIBits(dc, bitmap, 0, (uint)height, p, (BITMAPINFO*)info, DIB_USAGE.DIB_RGB_COLORS);
+            return lines == height ? bits : null;
+        }
+    }
+
+    private void DrawPointer(int targetW, int targetH)
+    {
+        CURSORINFO ci = _cursorInfo;
+        if ((ci.flags & CURSORINFO_FLAGS.CURSOR_SHOWING) == 0 || ci.hCursor.IsNull) return;
 
         double sx = (double)targetW / _srcW, sy = (double)targetH / _srcH;
         int x = (int)Math.Round((ci.ptScreenPos.X - _srcX - _cachedHotspot.X) * sx);

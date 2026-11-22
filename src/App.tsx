@@ -28,6 +28,7 @@ export default function App() {
     activeHostId,
     framesByHost,
     frameStore,
+    cursorStore,
     pairError,
     activityLog,
     pairHostById,
@@ -180,6 +181,7 @@ export default function App() {
             hosts={hosts}
             activeHost={activeHost}
             frameStore={frameStore}
+            cursorStore={cursorStore}
             onSelectHost={pairHostById}
             onSendInput={sendRemoteInput}
             onOpenQrScanner={() => setQrModalOpen(true)}

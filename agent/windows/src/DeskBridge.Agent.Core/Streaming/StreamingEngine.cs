@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Text.Json;
+using DeskBridge.Agent.Core.Cursor;
 using DeskBridge.Agent.Core.Relay;
 
 namespace DeskBridge.Agent.Core.Streaming;
@@ -36,14 +37,18 @@ public sealed class StreamingEngine : IDisposable
     private readonly CaptureScheduler _scheduler;
     private readonly StatsCollector _stats = new();
     private readonly DirtyTracker _dirty = new();
+    private readonly CursorPublisher _cursor = new();
 
     private readonly AutoResetEvent _captureWake = new(false);
     private readonly SemaphoreSlim _sendWake = new(0, int.MaxValue);
+    private readonly SemaphoreSlim _cursorWake = new(0, int.MaxValue);
     private readonly object _windowGate = new();
 
     private volatile StreamSettings _settings;
     private volatile bool _streaming;
     private volatile bool _stopping;
+    /// <summary>The relay confirmed its controllers draw the cursor: send cursor messages, keep it out of frames.</summary>
+    private volatile bool _clientCursor;
     private Thread? _captureThread;
 
     public StreamingEngine(RelayClient relay, IFrameSource source, ITileEncoder encoder, StreamSettings settings,
@@ -58,6 +63,11 @@ public sealed class StreamingEngine : IDisposable
         _log = log;
         _mailbox = new FrameMailbox(_differ);
         _scheduler = new CaptureScheduler(settings.IdleIntervalMs);
+        // One permit is enough to wake the loop; piling up more would only make it spin later.
+        _cursor.Pending += () =>
+        {
+            if (_cursorWake.CurrentCount == 0) _cursorWake.Release();
+        };
     }
 
     private long Now => _clock.ElapsedMilliseconds;
@@ -88,7 +98,7 @@ public sealed class StreamingEngine : IDisposable
         try
         {
             var relayRun = RunRelayAsync();
-            await Task.WhenAll(relayRun, EventLoopAsync(loops.Token), SendLoopAsync(loops.Token)).ConfigureAwait(false);
+            await Task.WhenAll(relayRun, EventLoopAsync(loops.Token), SendLoopAsync(loops.Token), CursorLoopAsync(loops.Token)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (loops.IsCancellationRequested)
         {
@@ -120,7 +130,8 @@ public sealed class StreamingEngine : IDisposable
             {
                 case RegisteredEvent r:
                     // The pairing code is shown in the tray, not logged: the log is a file on disk.
-                    _log($"Online as {r.HostId}.");
+                    _log($"Online as {r.HostId}." + (r.ClientCursor ? " Controllers draw the cursor." : ""));
+                    ApplyClientCursor(r.ClientCursor);
                     break;
                 case ControllerCountEvent c:
                     SetStreaming(c.Count > 0);
@@ -165,6 +176,17 @@ public sealed class StreamingEngine : IDisposable
         }
         _captureWake.Set();
         _sendWake.Release();
+    }
+
+    private void ApplyClientCursor(bool on)
+    {
+        bool changed = _clientCursor != on;
+        _clientCursor = on;
+        _source.DrawCursor = !on;
+        // A new relay connection has no cached cursor: send the current one again.
+        _cursor.Reset();
+        // The reference may still show (or lack) a drawn cursor.
+        if (changed) RequestKeyframe();
     }
 
     private void RequestKeyframe()
@@ -246,6 +268,43 @@ public sealed class StreamingEngine : IDisposable
         }
     }
 
+    // ---- Cursor ----
+
+    private async Task CursorLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            int delay = _cursor.DelayUntilDue(Now);
+            if (delay != 0) await _cursorWake.WaitAsync(delay == Timeout.Infinite ? 1000 : delay, ct).ConfigureAwait(false);
+            if (!_cursor.TryTake(Now, out CursorShapeData? shape, out CursorPositionMessage? position) || !_clientCursor) continue;
+            try
+            {
+                if (shape is not null)
+                {
+                    await _relay.SendEventAsync("host:cursor_shape", new
+                    {
+                        id = shape.Id,
+                        w = shape.Width,
+                        h = shape.Height,
+                        hotX = shape.HotX,
+                        hotY = shape.HotY,
+                        rgba = Convert.ToBase64String(shape.Rgba),
+                    }, ct).ConfigureAwait(false);
+                }
+                if (position is not null) await _relay.SendEventAsync("host:cursor", position, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Not connected (or dropped mid-send): resend everything once the cursor is next seen.
+                _cursor.Reset();
+            }
+        }
+    }
+
     // ---- Capture thread ----
 
     private void RecordPerf(EncodedFrame frame, IReadOnlyList<PixelRect> regions, in FrameImage image, ulong cycles0)
@@ -316,6 +375,13 @@ public sealed class StreamingEngine : IDisposable
             _differ.Invalidate();
             _dirty.Reset();
             return;
+        }
+        if (_clientCursor)
+        {
+            var (cw, ch) = _source.SourceSize;
+            // A moving cursor no longer changes the picture, but it means the user is active: keep capturing
+            // (and so sampling the cursor) at the fast rate instead of the idle one.
+            if (_cursor.Update(_source.Cursor, cw, ch)) _scheduler.NotifyScreenChange(Now);
         }
         if (res.Status == CaptureStatus.NoChange)
         {
@@ -391,5 +457,6 @@ public sealed class StreamingEngine : IDisposable
     {
         _captureWake.Dispose();
         _sendWake.Dispose();
+        _cursorWake.Dispose();
     }
 }

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ActivityLogEntry, HostProfile, RemoteInputEvent } from '../types/deskbridge';
+import type { ActivityLogEntry, CursorPosition, CursorShape, HostProfile, RemoteInputEvent } from '../types/deskbridge';
 import { apiFetch, notifyUnauthorized } from '../lib/auth';
 import { FrameStore } from '../lib/frameCompositor';
 import { LOCK_WARNING, isLockingInput } from '../lib/remoteInput';
+import { RemoteCursorStore, activeMonitorSize } from '../lib/remoteCursor';
 
 /** How often thumbnails (fleet cards, AI previews) are refreshed from the live canvas. */
 const SNAPSHOT_INTERVAL_MS = 2000;
@@ -31,6 +32,10 @@ export function useDeskBridgeSocket() {
     });
   }
   const frameStore = frameStoreRef.current;
+  // Cursor positions arrive up to 60 times a second: keep them out of React state too.
+  const cursorStoreRef = useRef<RemoteCursorStore | null>(null);
+  if (!cursorStoreRef.current) cursorStoreRef.current = new RemoteCursorStore();
+  const cursorStore = cursorStoreRef.current;
   const hostLastMetaAtRef = useRef<Record<string, { ts: number; win?: string }>>({});
 
   const [wsConnected, setWsConnected] = useState(false);
@@ -199,6 +204,12 @@ export function useDeskBridgeSocket() {
               }
             });
         }
+      } else if (msg.event === 'host:cursor_shape' && msg.payload) {
+        const { hostId, ...shape } = msg.payload as CursorShape & { hostId: string };
+        cursorStore.get(hostId).onShape(shape);
+      } else if (msg.event === 'host:cursor' && msg.payload) {
+        const { hostId, ...position } = msg.payload as CursorPosition & { hostId: string };
+        cursorStore.get(hostId).onRemote(position, performance.now());
       } else if (msg.event === 'host:status' && msg.payload) {
         const data = msg.payload as { hostId: string; status: HostProfile['status'] };
         setHosts((prev) =>
@@ -217,7 +228,7 @@ export function useDeskBridgeSocket() {
       }
       reconnectTimerRef.current = window.setTimeout(connect, 2500);
     };
-  }, [appendActivity, applyHostMeta, frameStore]);
+  }, [appendActivity, applyHostMeta, frameStore, cursorStore]);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -297,6 +308,8 @@ export function useDeskBridgeSocket() {
         return false;
       }
       const sent = sendWs('client:input', { hostId, input });
+      // Every pointer input passes here, so the prediction sees exactly what the agent will apply.
+      if (sent && target?.clientCursor) cursorStore.get(hostId).onLocalInput(input, activeMonitorSize(target), performance.now());
       if (sent && input.type !== 'mousemove' && input.type !== 'quality') {
         const summary =
           input.type === 'click'
@@ -316,7 +329,7 @@ export function useDeskBridgeSocket() {
       }
       return sent;
     },
-    [appendActivity, sendWs],
+    [appendActivity, sendWs, cursorStore],
   );
 
   const renameHost = useCallback(async (hostId: string, name: string, groupLabel: string) => {
@@ -352,6 +365,7 @@ export function useDeskBridgeSocket() {
     activeFrame,
     framesByHost,
     frameStore,
+    cursorStore,
     pairError,
     activityLog,
     pairHostById,

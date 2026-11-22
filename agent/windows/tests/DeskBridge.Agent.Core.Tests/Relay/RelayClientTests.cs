@@ -159,6 +159,7 @@ public class RelayClientTests
         Assert.Equal("windows-native", p.GetProperty("agentType").GetString());
         Assert.False(p.TryGetProperty("enrollKey", out _));
         Assert.False(p.TryGetProperty("hostSecret", out _));
+        Assert.True(p.GetProperty("cursor").GetBoolean());
 
         var monitors = p.GetProperty("monitors");
         Assert.Equal(2, monitors.GetArrayLength());
@@ -189,6 +190,17 @@ public class RelayClientTests
         t.PushText("""{"event":"host:registered","payload":{"hostId":"win-1234","pairingCode":"123456","pairingUrl":"u","controllerCount":0}}""");
         await h.Next<RegisteredEvent>();
         Assert.Equal("new-secret", h.Secrets.Load());
+    }
+
+    [Fact]
+    public async Task Registered_reports_whether_the_relay_draws_the_cursor_on_controllers()
+    {
+        await using var h = new Harness(Secret);
+        var t = await h.Transport(0);
+        t.PushText("""{"event":"host:registered","payload":{"hostId":"win-1234","pairingCode":"1","pairingUrl":"u","controllerCount":0}}""");
+        Assert.False((await h.Next<RegisteredEvent>()).ClientCursor);
+        t.PushText("""{"event":"host:registered","payload":{"hostId":"win-1234","pairingCode":"1","pairingUrl":"u","controllerCount":0,"clientCursor":true}}""");
+        Assert.True((await h.Next<RegisteredEvent>()).ClientCursor);
     }
 
     [Fact]
