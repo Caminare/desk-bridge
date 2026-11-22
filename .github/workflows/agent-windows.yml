@@ -3,6 +3,8 @@ name: Agent (Windows)
 on:
   push:
     branches: [main]
+    # Path filters are not evaluated for tag pushes, so every agent-v* tag runs the release.
+    tags: ["agent-v*"]
     paths:
       - "agent/windows/**"
       - "tests/fixtures/frames/**"
@@ -52,9 +54,48 @@ jobs:
 
       - run: dotnet test DeskBridge.Agent.sln -c Release
 
-      - run: dotnet publish src/DeskBridge.Agent.App -c Release -o artifacts/publish
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/agent-v* ]]; then
+            echo "value=${GITHUB_REF_NAME#agent-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-ci" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same zip on every run, so packaging breaks on the PR, not on release day.
+      - name: Package
+        shell: pwsh
+        env:
+          AGENT_VERSION: ${{ steps.version.outputs.value }}
+        run: ./eng/package-release.ps1 -Version $env:AGENT_VERSION
 
       - uses: actions/upload-artifact@v4
         with:
           name: deskbridge-agent-win-x64
-          path: agent/windows/artifacts/publish/DeskBridge.Agent.exe
+          path: agent/windows/artifacts/release/deskbridge-agent-win-x64.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/agent-v')
+    needs: [core, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Ships the exact zip the windows job built and tested; nothing is rebuilt here.
+      - uses: actions/download-artifact@v4
+        with:
+          name: deskbridge-agent-win-x64
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#agent-v}"
+          # A pre-release (-rc.1, -beta) must never become "latest": the Host tab downloads latest.
+          if [[ "$version" == *-* ]]; then channel=--prerelease; else channel=--latest; fi
+          gh release create "$TAG" deskbridge-agent-win-x64.zip             --repo "$GITHUB_REPOSITORY"             --title "DeskBridge agent $version"             --generate-notes             "$channel"

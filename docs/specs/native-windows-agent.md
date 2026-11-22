@@ -112,7 +112,7 @@ The invariants in `AGENTS.md` still apply. Additions for the native agent:
 ## Settled after the first draft
 
 1. **Node agent and `.bat` launcher:** `deskbridge-host.mjs` and the `.bat` launcher are removed together with the PowerShell agent, so `server/windowsAgentGenerator.ts` goes away entirely at parity.
-2. **Download flow:** the authenticated download returns a zip with the generic `.exe` plus a small generated config file (relay URL, enrollment key). The `.exe` is a GitHub release asset built by CI on `windows-latest`; the relay does not build or host it for now.
+2. **Download flow:** the Windows Host tab links straight to the GitHub release asset `releases/latest/download/deskbridge-agent-win-x64.zip` (generic `.exe` plus third-party licenses), built by CI on `windows-latest` when an `agent-vX.Y.Z` tag is pushed. No generated config and no secret in the download: the PC enrolls with a one-time link from Add a PC (revised 2026-11-21, T8; the zip-with-config idea was dropped in T2). The relay does not build, proxy or host the exe.
 3. **Reference PC:** the owner's development machine (the one running this repo) is the reference for the targets.
 
 ## Open items

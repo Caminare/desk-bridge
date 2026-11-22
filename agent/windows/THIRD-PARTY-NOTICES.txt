@@ -1,0 +1,19 @@
+DeskBridge Windows agent - third-party notices
+==============================================
+
+DeskBridge.Agent.exe is a self-contained .NET application. It includes the
+components below. Their license texts are in the licenses folder next to
+this file.
+
+This software is based in part on the work of the Independent JPEG Group.
+
+| Component                      | License                     | File in licenses/                                 |
+| ------------------------------ | --------------------------- | ------------------------------------------------- |
+| libjpeg-turbo (TurboJPEG)      | BSD-3-Clause, IJG, zlib     | libjpeg-turbo/LICENSE.md, libjpeg-turbo/README.ijg |
+| .NET runtime                   | MIT (+ third-party notices) | dotnet/LICENSE.TXT, dotnet/THIRD-PARTY-NOTICES.TXT |
+| Windows Desktop runtime (WinForms) | MIT                     | windowsdesktop/LICENSE                            |
+| Vortice.Windows (DXGI, D3D11)  | MIT                         | Vortice.Windows.txt                               |
+| Vortice.Mathematics            | MIT                         | Vortice.Mathematics.txt                           |
+| SharpGen.Runtime               | MIT                         | SharpGenTools.txt                                 |
+| CsWin32 (generated interop)    | MIT                         | CsWin32.txt                                       |
+| Windows SDK .NET projection    | Microsoft Windows SDK license | https://aka.ms/WinSDKLicenseURL                 |
