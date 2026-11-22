@@ -1,0 +1,43 @@
+AGENTS.md
+  h_07bc29e988e787 7,11,19-20,24-26,41-42,59-65,74-75,77,85,93,99-100,102,104,107,109,113,119,123,126,128,140,146,151,153-154
+README.md
+  h_07bc29e988e787 18,27,29-30,33,35-36,51-52,68-69,71-73,118,173-174,185,197,220,244,246,257,283,296,302-305,314
+deploy/setup-ubuntu.sh
+  h_07bc29e988e787 18,228-229
+deploy/update.sh
+  h_07bc29e988e787 50
+server/auth.ts
+  h_07bc29e988e787 11-13,176
+server/relay.ts
+  h_07bc29e988e787 582,682,684,701-706
+tests/enrollment.test.ts
+  h_07bc29e988e787 3,139-142
+tests/helpers.ts
+  h_07bc29e988e787 50-68
+tests/relay.test.ts
+  h_07bc29e988e787 8,24,75,78,97-98,100,102,114,116,122-126,128,134-137,155,157,164,167,170,174,176,179,181,183,189-190,192,195-196,203,216,223,231,237,239,241,264-265,268,272,283-284,349-350,353,357,359,372,385,389,392-393,400,405,411,424
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f7568ca1aca31029b821ca24b3638a9662edcc14",
+  "prompts": {
+    "7e79f76514dcd488": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd9d4b90-7209-4024-9698-fe35a9cd405e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 29,
+      "total_deletions": 0,
+      "accepted_lines": 29,
+      "overriden_lines": 0
+    }
+  },
+  "humans": {
+    "h_07bc29e988e787": {
+      "author": "Gabriel Vitor <c-gvitor@neogov.net>"
+    }
+  }
+}
