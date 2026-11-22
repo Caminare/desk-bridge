@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using DeskBridge.Agent.Core.Cursor;
 using DeskBridge.Agent.Core.Streaming;
 using SharpGen.Runtime;
 using Vortice;
@@ -16,8 +17,8 @@ namespace DeskBridge.Agent.Windows.Capture;
 /// <summary>
 /// Desktop Duplication capture of one monitor. Each acquired frame is copied on the GPU into a
 /// persistent full-resolution texture (so keyframes can be re-rendered without a new desktop update),
-/// scaled to the stream size by the D3D11 video processor, read back into a reusable CPU buffer and
-/// topped with the mouse pointer, which duplication does not include.
+/// scaled to the stream size by the D3D11 video processor, read back into a reusable CPU buffer and,
+/// unless the controllers draw it themselves, topped with the mouse pointer, which duplication does not include.
 /// </summary>
 public sealed unsafe class DxgiFrameSource : IFrameSource
 {
@@ -58,7 +59,9 @@ public sealed unsafe class DxgiFrameSource : IFrameSource
     private byte[] _shape = new byte[4096];
     private OutduplPointerShapeInfo _shapeInfo;
     private bool _haveShape;
+    private CursorShapeData? _cursorShape;
     private PixelRect _lastCursorRect;
+    private volatile bool _drawCursor = true;
 
     /// <param name="monitor">HMONITOR to capture; 0 selects the primary monitor.</param>
     public DxgiFrameSource(nint monitor = 0)
@@ -70,6 +73,15 @@ public sealed unsafe class DxgiFrameSource : IFrameSource
     public string Method => "dxgi";
 
     public (int Width, int Height) SourceSize => (_srcW, _srcH);
+
+    // Duplication reports the shape's top-left corner; the protocol wants the hotspot.
+    public CursorSnapshot Cursor => new(_ptrVisible, _ptrX + _shapeInfo.HotSpot.X, _ptrY + _shapeInfo.HotSpot.Y, _cursorShape);
+
+    public bool DrawCursor
+    {
+        get => _drawCursor;
+        set => _drawCursor = value;
+    }
 
     /// <summary>Why the last <see cref="CaptureStatus.Lost"/> happened, for logs; null when none has.</summary>
     public string? LastLostReason { get; private set; }
@@ -300,11 +312,13 @@ public sealed unsafe class DxgiFrameSource : IFrameSource
             _dup.ReleaseFrame();
         }
 
-        if (!presented && !cursorChanged && !forceFrame) return new CaptureResult(CaptureStatus.NoChange, default, null, 0);
+        // A pointer drawn by the controllers changes nothing in the picture.
+        bool pointerInFrame = cursorChanged && _drawCursor;
+        if (!presented && !pointerInFrame && !forceFrame) return new CaptureResult(CaptureStatus.NoChange, default, null, 0);
         if (!_havePicture) return new CaptureResult(CaptureStatus.NoChange, default, null, 0);
 
         // A forced frame without any update has no change information.
-        return Render(targetW, targetH, presented || cursorChanged ? desktopDirty : null, cursorChanged);
+        return Render(targetW, targetH, presented || pointerInFrame ? desktopDirty : null, pointerInFrame);
     }
 
     private CaptureResult Render(int targetW, int targetH, List<PixelRect>? dirtySource, bool cursorChanged)
@@ -318,7 +332,7 @@ public sealed unsafe class DxgiFrameSource : IFrameSource
         ReadBack(stride);
 
         PixelRect newCursor = default;
-        if (_ptrVisible && _haveShape)
+        if (_drawCursor && _ptrVisible && _haveShape)
         {
             double sx = (double)targetW / _srcW, sy = (double)targetH / _srcH;
             newCursor = CursorBlender.Draw(_cpu, targetW, targetH, stride, _shapeInfo.Type, _shape,
@@ -373,6 +387,11 @@ public sealed unsafe class DxgiFrameSource : IFrameSource
         {
             Result r = _dup!.GetFramePointerShape((uint)_shape.Length, (IntPtr)p, out _, out _shapeInfo);
             _haveShape = r.Success;
+        }
+        if (_haveShape)
+        {
+            _cursorShape = CursorShapeConverter.TryConvert((CursorShapeType)_shapeInfo.Type, _shape,
+                (int)_shapeInfo.Width, (int)_shapeInfo.Height, (int)_shapeInfo.Pitch, _shapeInfo.HotSpot.X, _shapeInfo.HotSpot.Y);
         }
     }
 

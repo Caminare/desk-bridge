@@ -18,6 +18,29 @@ public class FrameSourceTests
         Assert.True(r.CaptureMs >= 0);
     }
 
+    [DesktopFact]
+    public void Gdi_reports_the_system_cursor_with_a_converted_shape_when_it_is_showing()
+    {
+        using var source = new GdiFrameSource();
+        AssertFrame(source.TryCapture(320, 180, TimeSpan.Zero, forceFrame: true), 320, 180);
+
+        // CI runners and locked sessions may have no visible cursor; then there is nothing to read.
+        if (!source.Cursor.Visible) return;
+        Assert.NotNull(source.Cursor.Shape);
+        var shape = source.Cursor.Shape!;
+        Assert.InRange(shape.Width, 1, 128);
+        Assert.Equal(shape.Width * shape.Height * 4, shape.Rgba.Length);
+        Assert.Contains(Enumerable.Range(0, shape.Width * shape.Height), i => shape.Rgba[i * 4 + 3] != 0);
+    }
+
+    [DesktopFact]
+    public void Gdi_keeps_the_cursor_out_of_frames_when_controllers_draw_it()
+    {
+        using var source = new GdiFrameSource { DrawCursor = false };
+        Assert.False(source.DrawCursor);
+        AssertFrame(source.TryCapture(320, 180, TimeSpan.Zero, forceFrame: true), 320, 180);
+    }
+
     [DesktopFact(NeedsDxgi = true)]
     public void Dxgi_returns_a_frame_of_the_requested_size()
     {

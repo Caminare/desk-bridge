@@ -1,3 +1,4 @@
+using DeskBridge.Agent.Core.Cursor;
 using DeskBridge.Agent.Core.Relay;
 using DeskBridge.Agent.Core.Streaming;
 
@@ -28,6 +29,7 @@ public sealed class SwitchableFrameSource : IFrameSource
     private int _requestedIndex = NoRequest;
     private volatile bool _refreshRequested;
     private bool _notifyPending; // capture thread only
+    private volatile bool _drawCursor = true;
 
     /// <param name="enumerate">Lists the monitors; must not return an empty list at startup.</param>
     /// <param name="create">Creates the source for one monitor; may throw when the monitor is gone.</param>
@@ -39,6 +41,18 @@ public sealed class SwitchableFrameSource : IFrameSource
         _selector = new MonitorSelector(enumerate());
         _active = _selector.Active;
         _inner = create(_active);
+    }
+
+    public CursorSnapshot Cursor => _inner.Cursor;
+
+    public bool DrawCursor
+    {
+        get => _drawCursor;
+        set
+        {
+            _drawCursor = value;
+            _inner.DrawCursor = value;
+        }
     }
 
     /// <summary>Raised on the capture thread after the monitor list or the streamed monitor changed; send <see cref="Update"/>.</summary>
@@ -118,8 +132,11 @@ public sealed class SwitchableFrameSource : IFrameSource
                 _refreshRequested = true;
                 return true;
             }
+            next.DrawCursor = _drawCursor;
             IFrameSource old = _inner;
             _inner = next;
+            // A setter that ran during the swap may have reached only the old source.
+            next.DrawCursor = _drawCursor;
             _active = target;
             old.Dispose();
             replaced = true;

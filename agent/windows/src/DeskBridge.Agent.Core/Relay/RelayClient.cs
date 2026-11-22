@@ -186,6 +186,8 @@ public sealed class RelayClient
             ["monitors"] = JsonSerializer.SerializeToNode(s.Monitors, Json),
             ["activeMonitor"] = s.ActiveMonitor,
             ["agentType"] = RelayOptions.AgentType,
+            // Can send the cursor separately; the relay confirms in host:registered before we stop drawing it into frames.
+            ["cursor"] = true,
         };
         var secret = _secrets.Load();
         if (!string.IsNullOrEmpty(secret)) payload["hostSecret"] = secret;
@@ -216,7 +218,8 @@ public sealed class RelayClient
                         Str(payload, "hostId") ?? _options.HostId,
                         Str(payload, "pairingCode") ?? "",
                         Str(payload, "pairingUrl") ?? "",
-                        (int)(Num(payload, "controllerCount") ?? 0)));
+                        (int)(Num(payload, "controllerCount") ?? 0),
+                        has && payload.TryGetProperty("clientCursor", out var cc) && cc.ValueKind == JsonValueKind.True));
                     break;
                 case "host:controller_count":
                     _events.Writer.TryWrite(new ControllerCountEvent((int)(Num(payload, "count") ?? 0)));
