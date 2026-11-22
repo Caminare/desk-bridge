@@ -5,7 +5,7 @@ import {
   TestSocket,
   decodeFrameMeta,
   encodeFrame,
-  getEnrollKey,
+  enrollHost,
   loginCookie,
   sleep,
   startTestRelay,
@@ -21,7 +21,7 @@ describe('REST authentication', () => {
 
   for (const [method, path] of [
     ['GET', '/api/hosts'],
-    ['GET', '/api/host-agent/download?format=ps1'],
+    ['POST', '/api/agent/enroll-codes'],
     ['POST', '/api/ai/transcribe'],
     ['POST', '/api/hosts/pair-code'],
     ['PATCH', '/api/hosts/x'],
@@ -72,27 +72,16 @@ describe('REST authentication', () => {
     assert.equal(res.status, 401);
   });
 
-  test('agent download honours the keep-awake option', async () => {
-    const cookie = await loginCookie(t.base);
-    const plain = await (await fetch(`${t.base}/api/host-agent/download?format=ps1`, { headers: { cookie } })).text();
-    assert.ok(plain.includes('[bool]$KeepAwake = $false'));
-    const awake = await (await fetch(`${t.base}/api/host-agent/download?format=ps1&keepAwake=1`, { headers: { cookie } })).text();
-    assert.ok(awake.includes('[bool]$KeepAwake = $true'));
-  });
-
-  test('authenticated requests succeed and agent download is not cacheable', async () => {
+  test('authenticated requests succeed and legacy agent download route is gone', async () => {
     const cookie = await loginCookie(t.base);
     assert.equal((await fetch(`${t.base}/api/hosts`, { headers: { cookie } })).status, 200);
-    const dl = await fetch(`${t.base}/api/host-agent/download?format=ps1`, { headers: { cookie } });
-    assert.equal(dl.status, 200);
-    assert.equal(dl.headers.get('cache-control'), 'no-store');
+    assert.equal((await fetch(`${t.base}/api/host-agent/download?format=ps1`, { headers: { cookie } })).status, 404);
   });
 });
 
 describe('WebSocket host and controller protocol', () => {
   let t: TestRelay;
   let cookie: string;
-  let enrollKey: string;
   const sockets: TestSocket[] = [];
   const open = async (opts?: Parameters<typeof TestSocket.open>[1]) => {
     const s = await TestSocket.open(t.wsUrl, opts);
@@ -105,48 +94,47 @@ describe('WebSocket host and controller protocol', () => {
     await c.until((s) => Boolean(s.event('fleet:update')), 2000, 'fleet:update');
     return c;
   };
-  const registerHost = async (hostId: string, extra: Record<string, unknown> = {}) => {
+  const registerEnrolledHost = async (name: string, extra: Record<string, unknown> = {}) => {
+    const creds = await enrollHost(t.base, cookie, name);
     const h = await open();
-    h.send('host:register', { hostId, name: hostId, enrollKey, ...extra });
+    h.send('host:register', { hostId: creds.hostId, hostSecret: creds.hostSecret, name, ...extra });
     await h.until((s) => Boolean(s.event('host:registered') || s.event('host:auth_error')), 2000, 'registration');
-    return h;
+    return { h, ...creds };
   };
 
   before(async () => {
     t = await startTestRelay();
     cookie = await loginCookie(t.base);
-    enrollKey = await getEnrollKey(t.base, cookie);
   });
   after(async () => {
     sockets.forEach((s) => s.close());
     await t.stop();
   });
 
-  test('host without enrollment key is rejected with 4401', async () => {
+  test('host without a secret is rejected with 4401', async () => {
     const h = await open();
-    h.send('host:register', { hostId: 'no-key' });
+    h.send('host:register', { hostId: 'no-secret' });
     await h.until((s) => s.closeCode !== null, 2000, 'close');
     assert.ok(h.event('host:auth_error'));
     assert.equal(h.closeCode, 4401);
   });
 
-  test('enrolled host receives a one-time host secret', async () => {
-    const h = await registerHost('host-a');
-    assert.ok(h.event('host:registered')?.payload.hostSecret);
-  });
-
-  test('re-registering a host id without its secret is rejected', async () => {
-    const legit = await registerHost('host-b');
-    const hijack = await registerHost('host-b');
+  test('re-registering a host id with the wrong secret is rejected without dropping the live host', async () => {
+    const { h: legit, hostId } = await registerEnrolledHost('host-b');
+    const hijack = await open();
+    hijack.send('host:register', { hostId, hostSecret: 'wrong-secret', name: 'host-b' });
+    await hijack.until((s) => s.closeCode !== null, 2000, 'close');
     assert.ok(hijack.event('host:auth_error'));
+    assert.equal(hijack.closeCode, 4401);
     await sleep(50);
     assert.equal(legit.ws.readyState, legit.ws.OPEN);
   });
 
   test('host reconnects with its secret, replacing the old socket', async () => {
-    const first = await registerHost('host-c');
-    const hostSecret = first.event('host:registered')!.payload.hostSecret;
-    const second = await registerHost('host-c', { hostSecret });
+    const { h: first, hostId, hostSecret } = await registerEnrolledHost('host-c');
+    const second = await open();
+    second.send('host:register', { hostId, hostSecret, name: 'host-c' });
+    await second.until((s) => Boolean(s.event('host:registered')), 2000, 'registered');
     const reg = second.event('host:registered');
     assert.ok(reg, 'registered');
     assert.equal(reg.payload.hostSecret, undefined, 'no new secret issued');
@@ -164,55 +152,55 @@ describe('WebSocket host and controller protocol', () => {
   });
 
   test('a session cookie from a foreign origin is treated as anonymous', async () => {
-    await registerHost('host-x');
+    const { hostId } = await registerEnrolledHost('host-x');
     const xo = await open({ headers: { cookie, origin: 'https://evil.example' } });
-    xo.send('client:pair', { hostId: 'host-x' });
+    xo.send('client:pair', { hostId });
     await xo.until((s) => s.closeCode !== null, 2000, 'close');
     assert.equal(xo.closeCode, 4401);
     assert.equal(xo.event('client:paired'), undefined);
   });
 
   test('fleet updates never include host secrets', async () => {
-    await registerHost('host-d');
+    const { hostId, hostSecret } = await registerEnrolledHost('host-d');
     const c = await openController();
     const raw = JSON.stringify(c.messages);
-    assert.ok(raw.includes('host-d'));
+    assert.ok(raw.includes(hostId));
     assert.ok(!raw.includes('secretHash'));
     assert.ok(!raw.includes('hostSecret'));
-    assert.ok(!raw.includes(enrollKey));
+    assert.ok(!raw.includes(hostSecret));
   });
 
   test('frames and input flow between paired controller and host', async () => {
-    const h = await registerHost('host-e');
+    const { h, hostId } = await registerEnrolledHost('host-e');
     const c = await openController();
-    c.send('client:pair', { hostId: 'host-e' });
+    c.send('client:pair', { hostId });
     await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
 
-    h.ws.send(encodeFrame({ hostId: 'host-e', seq: 1 }, Buffer.from('jpeg-1')));
+    h.ws.send(encodeFrame({ hostId, seq: 1 }, Buffer.from('jpeg-1')));
     await c.until((s) => s.binaries.length === 1, 2000, 'frame');
-    assert.equal(decodeFrameMeta(c.binaries[0]).hostId, 'host-e');
+    assert.equal(decodeFrameMeta(c.binaries[0]).hostId, hostId);
 
-    c.send('client:input', { hostId: 'host-e', input: { type: 'type', text: 'hello' } });
+    c.send('client:input', { hostId, input: { type: 'type', text: 'hello' } });
     await h.until((s) => s.messages.some((m) => m.event === 'client:input'), 2000, 'input');
     assert.equal(h.messages.find((m) => m.event === 'client:input')!.payload.text, 'hello');
   });
 
   test('a host cannot inject frames into another host stream', async () => {
-    await registerHost('victim');
-    const attacker = await registerHost('attacker');
+    const { hostId: victimId } = await registerEnrolledHost('victim');
+    const { h: attacker } = await registerEnrolledHost('attacker');
     const c = await openController();
-    c.send('client:pair', { hostId: 'victim' });
+    c.send('client:pair', { hostId: victimId });
     await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
 
-    attacker.ws.send(encodeFrame({ hostId: 'victim', seq: 1 }, Buffer.from('fake')));
-    attacker.send('host:frame', { hostId: 'victim', frame: 'data:image/jpeg;base64,AAAA' });
+    attacker.ws.send(encodeFrame({ hostId: victimId, seq: 1 }, Buffer.from('fake')));
+    attacker.send('host:frame', { hostId: victimId, frame: 'data:image/jpeg;base64,AAAA' });
     await sleep(200);
     assert.equal(c.binaries.length, 0);
     assert.equal(c.messages.filter((m) => m.event === 'host:frame').length, 0);
   });
 
   test('hosts report monitors; host:update is validated and broadcast', async () => {
-    const h = await registerHost('multi', {
+    const { h, hostId } = await registerEnrolledHost('multi', {
       screenWidth: 2560,
       screenHeight: 1440,
       monitors: [
@@ -225,14 +213,14 @@ describe('WebSocket host and controller protocol', () => {
     const c = await openController();
     const hostIn = (msgs: TestSocket['messages']) =>
       [...msgs].reverse().find((m) => m.event === 'fleet:update')?.payload as unknown as Array<Record<string, any>>;
-    let multi = hostIn(c.messages).find((x) => x.hostId === 'multi')!;
+    let multi = hostIn(c.messages).find((x) => x.hostId === hostId)!;
     assert.equal(multi.monitors.length, 2, 'malformed monitor dropped');
     assert.equal(multi.activeMonitor, 0);
 
     const before = c.messages.length;
     h.send('host:update', { screenWidth: 1920, screenHeight: 1080, activeMonitor: 1 });
     await c.until((s) => s.messages.length > before && s.messages.slice(before).some((m) => m.event === 'fleet:update'), 2000, 'fleet update');
-    multi = hostIn(c.messages).find((x) => x.hostId === 'multi')!;
+    multi = hostIn(c.messages).find((x) => x.hostId === hostId)!;
     assert.equal(multi.activeMonitor, 1);
     assert.equal(multi.screenWidth, 1920);
 
@@ -240,17 +228,17 @@ describe('WebSocket host and controller protocol', () => {
     const mark = c.messages.length;
     h.send('host:update', { screenWidth: 999999, activeMonitor: 7 });
     await c.until((s) => s.messages.slice(mark).some((m) => m.event === 'fleet:update'), 2000, 'fleet update');
-    multi = hostIn(c.messages).find((x) => x.hostId === 'multi')!;
+    multi = hostIn(c.messages).find((x) => x.hostId === hostId)!;
     assert.equal(multi.screenWidth, 1920);
     assert.equal(multi.activeMonitor, undefined);
   });
 
   test('monitor switch input is forwarded to the host', async () => {
-    const h = await registerHost('multi-2');
+    const { h, hostId } = await registerEnrolledHost('multi-2');
     const c = await openController();
-    c.send('client:pair', { hostId: 'multi-2' });
+    c.send('client:pair', { hostId });
     await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
-    c.send('client:input', { hostId: 'multi-2', input: { type: 'monitor', index: 1 } });
+    c.send('client:input', { hostId, input: { type: 'monitor', index: 1 } });
     await h.until((s) => s.messages.some((m) => m.event === 'client:input' && m.payload.type === 'monitor'), 2000, 'input');
   });
 
@@ -273,14 +261,15 @@ describe('heartbeat', () => {
 
   test('a host that stops answering pings is terminated and marked offline', async () => {
     const cookie = await loginCookie(t.base);
-    const enrollKey = await getEnrollKey(t.base, cookie);
+    const zombieCreds = await enrollHost(t.base, cookie, 'zombie');
+    const healthyCreds = await enrollHost(t.base, cookie, 'healthy');
     // autoPong: false simulates a connection that died silently.
     const host = await TestSocket.open(t.wsUrl, { autoPong: false });
-    host.send('host:register', { hostId: 'zombie', enrollKey });
+    host.send('host:register', zombieCreds);
     await host.until((s) => Boolean(s.event('host:registered')), 2000, 'registered');
 
     const healthy = await TestSocket.open(t.wsUrl);
-    healthy.send('host:register', { hostId: 'healthy', enrollKey });
+    healthy.send('host:register', healthyCreds);
     await healthy.until((s) => Boolean(s.event('host:registered')), 2000, 'registered');
 
     await host.until((s) => s.closeCode !== null, 2000, 'zombie terminated');
@@ -291,8 +280,8 @@ describe('heartbeat', () => {
       hostId: string;
       status: string;
     }>;
-    assert.equal(hosts.find((h) => h.hostId === 'zombie')?.status, 'offline');
-    assert.equal(hosts.find((h) => h.hostId === 'healthy')?.status, 'online');
+    assert.equal(hosts.find((h) => h.hostId === zombieCreds.hostId)?.status, 'offline');
+    assert.equal(hosts.find((h) => h.hostId === healthyCreds.hostId)?.status, 'online');
     healthy.close();
   });
 });
@@ -350,7 +339,6 @@ describe('AI routes', () => {
 describe('tiled (v2) frames, keyframes and adaptive quality', () => {
   let t: TestRelay;
   let cookie: string;
-  let enrollKey: string;
   const sockets: TestSocket[] = [];
   const tile = (x: number, y: number, n = 1) => ({ x, y, w: 64, h: 64, data: new Uint8Array(n).fill(9) });
   const key = (seq: number, extra: Record<string, unknown> = {}) =>
@@ -358,22 +346,22 @@ describe('tiled (v2) frames, keyframes and adaptive quality', () => {
   const delta = (seq: number, extra: Record<string, unknown> = {}) =>
     Buffer.from(encodeFrameV(2, { hostId: 'v2', seq, w: 128, h: 64, key: false, ...extra }, [tile(64, 0)]));
 
-  async function setup(hostId: string) {
+  async function setup(name: string) {
+    const creds = await enrollHost(t.base, cookie, name);
     const h = await TestSocket.open(t.wsUrl);
     sockets.push(h);
-    h.send('host:register', { hostId, enrollKey, agentType: 'windows-native' });
+    h.send('host:register', { ...creds, agentType: 'windows-native' });
     await h.until((s) => Boolean(s.event('host:registered')), 2000, 'registered');
     const c = await TestSocket.open(t.wsUrl, { headers: { cookie, origin: t.base } });
     sockets.push(c);
-    c.send('client:pair', { hostId });
+    c.send('client:pair', { hostId: creds.hostId });
     await c.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
-    return { h, c };
+    return { h, c, hostId: creds.hostId };
   }
 
   before(async () => {
     t = await startTestRelay();
     cookie = await loginCookie(t.base);
-    enrollKey = await getEnrollKey(t.base, cookie);
   });
   after(async () => {
     sockets.forEach((s) => s.close());
@@ -381,7 +369,7 @@ describe('tiled (v2) frames, keyframes and adaptive quality', () => {
   });
 
   test('pairing requests a keyframe and withholds deltas until it arrives', async () => {
-    const { h, c } = await setup('v2-a');
+    const { h, c, hostId } = await setup('v2-a');
     await h.until((s) => s.messages.some((m) => m.event === 'host:keyframe_request'), 2000, 'keyframe request');
 
     h.ws.send(delta(1));
@@ -394,33 +382,33 @@ describe('tiled (v2) frames, keyframes and adaptive quality', () => {
     await c.until((s) => s.binaries.length === 2, 2000, 'keyframe + delta');
     const frames = c.binaries.map((b) => parseFrame(b)!);
     assert.deepEqual(frames.map((f) => [f.header.seq, f.isKey]), [[2, true], [3, false]]);
-    assert.equal(frames[0].header.hostId, 'v2-a', 'hostId rewritten to the registered host');
+    assert.equal(frames[0].header.hostId, hostId, 'hostId rewritten to the registered host');
   });
 
   test('controller keyframe requests are forwarded (throttled)', async () => {
-    const { h, c } = await setup('v2-b');
+    const { h, c, hostId } = await setup('v2-b');
     await sleep(350);
     const before = h.messages.filter((m) => m.event === 'host:keyframe_request').length;
-    c.send('client:keyframe_request', { hostId: 'v2-b' });
-    c.send('client:keyframe_request', { hostId: 'v2-b' });
+    c.send('client:keyframe_request', { hostId });
+    c.send('client:keyframe_request', { hostId });
     await h.until((s) => s.messages.filter((m) => m.event === 'host:keyframe_request').length > before, 2000, 'forwarded');
     await sleep(100);
     assert.equal(h.messages.filter((m) => m.event === 'host:keyframe_request').length, before + 1, 'throttled');
   });
 
   test('a full-frame keyframe becomes the cached image for new controllers', async () => {
-    const { h } = await setup('v2-c');
+    const { h, hostId } = await setup('v2-c');
     h.ws.send(key(1));
     await sleep(100);
     const c2 = await TestSocket.open(t.wsUrl, { headers: { cookie, origin: t.base } });
     sockets.push(c2);
-    c2.send('client:pair', { hostId: 'v2-c' });
+    c2.send('client:pair', { hostId });
     await c2.until((s) => Boolean(s.event('client:paired')), 2000, 'paired');
     assert.equal(c2.event('client:paired')!.payload.latestFrame, 'data:image/jpeg;base64,AQI=');
   });
 
   test('a steady high RTT keeps quality; queuing above the baseline lowers it', async () => {
-    const { h, c } = await setup('v2-d');
+    const { h, c, hostId } = await setup('v2-d');
     const qualityMsgs = () => h.messages.filter((m) => m.event === 'client:input' && m.payload.type === 'quality');
     // Long path, no congestion: RTT high but flat.
     h.ws.send(key(1, { stats: { rtt: 600 } }));
@@ -433,7 +421,7 @@ describe('tiled (v2) frames, keyframes and adaptive quality', () => {
     const down = h.messages.filter((m) => m.event === 'client:input' && m.payload.type === 'quality').at(-1)!.payload;
     assert.ok(down.maxWidth < 1152, `stepped below default (${down.maxWidth})`);
 
-    c.send('client:input', { hostId: 'v2-d', input: { type: 'quality', maxWidth: 1600, jpegQuality: 78 } });
+    c.send('client:input', { hostId, input: { type: 'quality', maxWidth: 1600, jpegQuality: 78 } });
     await h.until(
       (s) => s.messages.some((m) => m.event === 'client:input' && m.payload.type === 'quality' && m.payload.maxWidth === 1600),
       2000,

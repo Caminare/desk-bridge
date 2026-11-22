@@ -47,12 +47,25 @@ export async function loginCookie(base: string, token = TEST_TOKEN): Promise<str
   return (res.headers.get('set-cookie') || '').split(';')[0];
 }
 
-export async function getEnrollKey(base: string, cookie: string): Promise<string> {
-  const res = await fetch(`${base}/api/host-agent/download?format=ps1`, { headers: { cookie } });
-  const text = await res.text();
-  const key = text.match(/\[string\]\$EnrollKey = '([^']+)'/)?.[1];
-  if (!key) throw new Error('enroll key not found in agent script');
-  return key;
+export async function enrollHost(
+  base: string,
+  cookie: string,
+  name = 'Test PC',
+): Promise<{ hostId: string; hostSecret: string }> {
+  const mintRes = await fetch(`${base}/api/agent/enroll-codes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', cookie },
+    body: '{}',
+  });
+  if (!mintRes.ok) throw new Error(`mint enroll code failed: ${mintRes.status}`);
+  const { code } = (await mintRes.json()) as { code: string };
+  const enrollRes = await fetch(`${base}/api/agent/enroll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, name }),
+  });
+  if (!enrollRes.ok) throw new Error(`enroll host failed: ${enrollRes.status}`);
+  return (await enrollRes.json()) as { hostId: string; hostSecret: string };
 }
 
 type Json = { event: string; payload: Record<string, any> };

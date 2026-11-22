@@ -8,9 +8,9 @@ import type { IncomingMessage } from 'node:http';
  * - Controllers (the phone / browser UI) log in with a single access token and
  *   receive a signed, HttpOnly session cookie. The cookie is sent automatically
  *   with REST calls and with the WebSocket upgrade.
- * - Host agents authenticate with an enrollment key (embedded in the agent
- *   script, which can only be downloaded by a logged-in owner) and, after their
- *   first registration, with a per-host secret issued by the server.
+ * - Host agents enroll with a one-time code minted by a logged-in owner
+ *   (POST /api/agent/enroll) and receive a per-host secret used to authenticate
+ *   subsequent WebSocket registrations.
  */
 
 export const SESSION_COOKIE = 'db_session';
@@ -20,12 +20,10 @@ const MIN_TOKEN_LENGTH = 16;
 interface AuthStore {
   accessToken?: string;
   sessionKey: string;
-  enrollKey: string;
 }
 
 export interface AuthConfig {
   accessToken: string;
-  enrollKey: string;
   /** True when the token lives in the auth store (not the env) and should be shown at startup. */
   tokenFromStore: boolean;
   /** True when the token was created during this start. */
@@ -61,10 +59,6 @@ export function loadAuthConfig(
     store.sessionKey = randomSecret(32);
     changed = true;
   }
-  if (!store.enrollKey) {
-    store.enrollKey = randomSecret(24);
-    changed = true;
-  }
   if (!envToken && !store.accessToken) {
     store.accessToken = randomSecret(18);
     generatedToken = true;
@@ -81,7 +75,6 @@ export function loadAuthConfig(
 
   return {
     accessToken,
-    enrollKey: store.enrollKey!,
     tokenFromStore: !envToken,
     generatedToken,
     signingKey,
@@ -180,7 +173,7 @@ export function buildClearedSessionCookie(): string {
 /**
  * Browsers always send an Origin header on WebSocket upgrades. Reject sessions
  * from foreign origins so a malicious page cannot ride the owner's cookie.
- * Native agents send no Origin and are authenticated by enrollment key instead.
+ * Native agents send no Origin and authenticate with their per-host secret.
  */
 export function isSameOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;

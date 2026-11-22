@@ -29,7 +29,6 @@ test('generated token persists across loads with 0600 permissions', () => {
     const second = loadAuthConfig(file, '');
     assert.equal(second.generatedToken, false);
     assert.equal(second.accessToken, first.accessToken);
-    assert.equal(second.enrollKey, first.enrollKey);
     if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   } finally {
     cleanup();
