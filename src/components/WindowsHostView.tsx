@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Monitor, MonitorPlay, Play, QrCode, ScreenShare, Square } from 'lucide-react';
+import { EyeOff, FlaskConical, Monitor, MonitorPlay, Play, QrCode, ScreenShare, Square } from 'lucide-react';
 import type { RemoteInputEvent } from '../types/deskbridge';
 import { apiFetch } from '../lib/auth';
 import { AddPcCard } from './hostView/AddPcCard';
@@ -116,7 +116,7 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
           await videoRef.current.play();
         }
       } catch {
-        setHostError('Screen capture was cancelled or unavailable. Switched to Interactive Windows Studio Canvas.');
+        setHostError('Screen capture was cancelled or unavailable. Switched to the simulated desktop.');
         setCaptureSource('virtual');
       }
     }
@@ -228,21 +228,39 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
           Windows Host App
         </h1>
         <p className="text-sm text-slate-600 dark:text-slate-400 max-w-2xl">
-          Run the Windows agent on any number of Windows PCs to generate a QR code and expose each desktop securely, or start Live Browser Host Mode right here to test pairing immediately.
+          Install the DeskBridge agent on each Windows PC you want to control, then add it to your fleet with a one-time link.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        <div className="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 space-y-5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        <AgentDownloadCard />
+        <AddPcCard />
+      </div>
+
+      <section className="space-y-4">
+        <div className="flex items-start gap-2.5">
+          <FlaskConical className="w-5 h-5 mt-0.5 text-slate-500 dark:text-slate-400 shrink-0" />
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white">Demo / test mode (no agent needed)</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-2xl">
+              Hosts this browser tab so you can try pairing and the controller. It can&apos;t control this PC: use the agent
+              above for that.
+            </p>
+          </div>
+        </div>
+
+        <div className="max-w-3xl rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <MonitorPlay className="w-5 h-5 text-blue-600 dark:text-blue-400" />
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                  Live Browser Host & QR Generator
+                  Browser demo host
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Exposes this session over WebSockets so your phone can scan & control it
+                  {captureSource === 'virtual'
+                    ? 'Simulated desktop for trying the app. Nothing runs on this PC.'
+                    : 'View-only: the phone can watch this screen but not control it.'}
                 </p>
               </div>
             </div>
@@ -263,7 +281,7 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition-colors"
               >
                 <Play className="w-4 h-4" />
-                <span>Start Host & Generate QR</span>
+                <span>Start demo host</span>
               </button>
             )}
           </div>
@@ -311,7 +329,7 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
                 }`}
               >
                 <Monitor className="w-3.5 h-3.5" />
-                <span>Interactive Windows Canvas</span>
+                <span>Simulated desktop</span>
               </button>
               <button
                 type="button"
@@ -324,7 +342,7 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
                 }`}
               >
                 <ScreenShare className="w-3.5 h-3.5" />
-                <span>Real Screen Share</span>
+                <span>Screen share (view-only)</span>
               </button>
             </div>
 
@@ -334,6 +352,16 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
               </span>
             )}
           </div>
+
+          {isHosting && captureSource === 'display' && (
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs text-slate-600 dark:text-slate-300">
+              <EyeOff className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                View-only: browsers can&apos;t send mouse or keyboard input to your PC, so taps and typing from the phone are
+                ignored here.
+              </span>
+            </div>
+          )}
 
           {hostError && (
             <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-600 dark:text-amber-400">
@@ -347,9 +375,9 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
             {!isHosting && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/75 text-center p-6">
                 <QrCode className="w-8 h-8 text-blue-400" />
-                <p className="text-sm font-medium text-white">Host Standby</p>
+                <p className="text-sm font-medium text-white">Demo host stopped</p>
                 <p className="text-xs text-slate-400 max-w-sm">
-                  Click &ldquo;Start Host &amp; Generate QR&rdquo; to expose this desktop and get a scannable pairing QR code.
+                  Choose &ldquo;Start demo host&rdquo; to get a pairing QR code for this browser tab.
                 </p>
               </div>
             )}
@@ -366,12 +394,7 @@ export function WindowsHostView({ onConnectToHost }: WindowsHostViewProps) {
             />
           )}
         </div>
-
-        <div className="lg:col-span-5 space-y-6">
-          <AddPcCard />
-          <AgentDownloadCard hostName={hostName} groupLabel={groupLabel} />
-        </div>
-      </div>
+      </section>
     </div>
   );
 }

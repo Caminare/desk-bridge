@@ -27,7 +27,7 @@ DeskBridge is a remote-desktop relay. A phone or browser controller sends mouse,
 | `src/App.tsx` | Tab shell: Fleet, Control Deck, Windows Host. |
 | `src/hooks/useDeskBridgeSocket.ts` | Controller WebSocket client: fleet state, pairing, frame decoding, input sending. |
 | `src/lib/auth.ts` | `apiFetch` (use it for all `/api` calls), login/logout, unauthorized event. |
-| `src/components/` | UI. `TouchControlDeck.tsx` (gesture handling + layout) composes `controlDeck/*` (`StreamViewport`, `TrackpadPanel`, `KeyboardDrawer`, `FullscreenHud`, `HostChips`, `qualityPresets`). `WindowsHostView.tsx` (browser host mode) composes `hostView/*` (`PairingPanel`, `AgentDownloadCard`). Also `FleetView.tsx`, `QrScannerModal.tsx`, `LoginScreen.tsx`, `AuthGate.tsx`. |
+| `src/components/` | UI. `TouchControlDeck.tsx` (gesture handling + layout) composes `controlDeck/*` (`StreamViewport`, `TrackpadPanel`, `KeyboardDrawer`, `FullscreenHud`, `HostChips`, `qualityPresets`). `WindowsHostView.tsx` (agent download and Add a PC first, browser host demo mode below) composes `hostView/*` (`AgentDownloadCard`, `AddPcCard`, `PairingPanel`). Also `FleetView.tsx`, `QrScannerModal.tsx`, `LoginScreen.tsx`, `AuthGate.tsx`. |
 | `src/components/LiveStreamCanvas.tsx` | Displays a host's composited canvas (rAF-coalesced, no React state per frame). |
 | `src/lib/streamStatsRows.ts` | Label/value rows for `controlDeck/StreamStatsOverlay` (the strip adds the agent diagnostics; the fullscreen overlay stays compact). |
 | `src/hooks/useCoalescedPointerInput.ts` | Batches relative mouse moves and absolute hover positions (16ms, latest wins) and scroll deltas (24ms) before sending. In Tap Screen mode a connected mouse moving with no button pressed moves the remote cursor (`queueMoveTo`). |
