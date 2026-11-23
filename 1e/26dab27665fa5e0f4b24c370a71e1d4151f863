@@ -1,0 +1,24 @@
+GLOSSARY.md
+  c7da5127b4a8598b 15-28
+docs/specs/keyboard-input.md
+  c7da5127b4a8598b 1-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1e26dab27665fa5e0f4b24c370a71e1d4151f863",
+  "prompts": {
+    "c7da5127b4a8598b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "019de46d-54a5-4ca4-8a33-7d3c781e71b1",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 80,
+      "total_deletions": 1,
+      "accepted_lines": 79,
+      "overriden_lines": 0
+    }
+  }
+}
