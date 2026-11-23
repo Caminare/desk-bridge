@@ -1,0 +1,22 @@
+GLOSSARY.md
+  c7da5127b4a8598b 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e3c00a24dc5a0e1c0d8915e26f240bbf4ad58858",
+  "prompts": {
+    "c7da5127b4a8598b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "019de46d-54a5-4ca4-8a33-7d3c781e71b1",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 27,
+      "total_deletions": 0,
+      "accepted_lines": 27,
+      "overriden_lines": 0
+    }
+  }
+}
