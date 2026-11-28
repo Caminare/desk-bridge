@@ -20,6 +20,9 @@ public sealed class FrameMailbox
 
     public bool HasPending { get { lock (_gate) return _pending is not null; } }
 
+    /// <summary>Encoded payload size of the pending frame (0 when none), so the send window can check that it fits.</summary>
+    public int PendingBytes { get { lock (_gate) return _pending?.PayloadBytes ?? 0; } }
+
     /// <summary>
     /// Posts <paramref name="frame"/>. Returns false (frame not stored, caller keeps ownership) when it was
     /// diffed against a reference that has since moved on: diff and encode again. Otherwise stores it;

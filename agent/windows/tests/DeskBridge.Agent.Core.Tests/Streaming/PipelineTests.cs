@@ -145,6 +145,19 @@ public class FrameMailboxTests
     }
 
     [Fact]
+    public void Reports_the_payload_size_of_the_pending_frame_for_the_send_window()
+    {
+        var (d, box, asm, enc) = Setup();
+        Assert.Equal(0, box.PendingBytes);
+        EncodedFrame f = MakeFrame(d, asm, enc, 10, key: true);
+        Assert.True(box.Post(f, 0, out _));
+        Assert.True(f.PayloadBytes > 0);
+        Assert.Equal(f.PayloadBytes, box.PendingBytes);
+        Assert.True(box.TryTake(1, out _, out _));
+        Assert.Equal(0, box.PendingBytes);
+    }
+
+    [Fact]
     public void Post_is_rejected_when_the_reference_moved_on()
     {
         var (d, box, asm, enc) = Setup();
@@ -220,7 +233,7 @@ public class StatsCollectorTests
         Assert.Null(st.Capc);
         Assert.Null(st.Rtt); // unmeasured
         Assert.Null(st.Snd);
-        Assert.Equal(256, st.Win);
+        Assert.Equal(16, st.Win); // KB: a fresh window holds about one frame
 
         s.Update(3000);
         Assert.Equal(0, s.BuildFrameStats(f, w, "dxgi", 0, "").Cfps);

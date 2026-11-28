@@ -240,9 +240,10 @@ public sealed class StreamingEngine : IDisposable
 
             EncodedFrame? frame;
             double age;
+            int pendingBytes = _mailbox.PendingBytes;
             lock (_windowGate)
             {
-                if (!_window.CanSend(now)) continue;
+                if (!_window.CanSend(now, pendingBytes)) continue;
             }
             if (!_mailbox.TryTake(now, out frame, out age) || frame is null) continue;
 
