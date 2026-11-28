@@ -1,0 +1,40 @@
+agent/windows/src/DeskBridge.Agent.Core/Streaming/SendWindow.cs
+  f9cd7763da9e98c5 3,24,67,74,76,78,83,86-89
+  f9cd7763da9e98c5 4-6
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/CsvPerfLogTests.cs
+  f9cd7763da9e98c5 35-37,40-50
+  f9cd7763da9e98c5 32-34
+  f9cd7763da9e98c5 38-39
+  f9cd7763da9e98c5 51
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/SendWindowSchedulerTests.cs
+  f9cd7763da9e98c5 139-168
+agent/windows/src/DeskBridge.Agent.Core/Streaming/PerfLog.cs
+  f9cd7763da9e98c5 34-43,47-51,55-56,59,62-65,87-94,96-101
+  f9cd7763da9e98c5 33
+  f9cd7763da9e98c5 44-46
+  f9cd7763da9e98c5 95
+  f9cd7763da9e98c5 102
+agent/windows/src/DeskBridge.Agent.Core/Streaming/StreamingEngine.cs
+  f9cd7763da9e98c5 193-198,200-203,220
+  f9cd7763da9e98c5 192
+  f9cd7763da9e98c5 199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2cf826f47e9be0a7f33866cf47d9a338abe03fe9",
+  "prompts": {
+    "f9cd7763da9e98c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8134b2cc-c7cc-4a12-933f-0066921a9814",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 1112,
+      "total_deletions": 757,
+      "accepted_lines": 996,
+      "overriden_lines": 36
+    }
+  }
+}
