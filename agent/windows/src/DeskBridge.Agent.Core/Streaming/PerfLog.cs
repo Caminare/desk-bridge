@@ -23,18 +23,46 @@ public readonly record struct FramePerfSample(
     /// </summary>
     ulong EncodeCycles,
     /// <summary>Processor the capture thread was on when the encode finished.</summary>
-    int ProcessorId);
+    int ProcessorId,
+    /// <summary>Stream size the frame was encoded at.</summary>
+    int Width,
+    int Height,
+    /// <summary>JPEG quality the frame was encoded with.</summary>
+    int Quality);
 
-/// <summary>Receives per-frame timing. Called on the capture thread, so it must be cheap.</summary>
+/// <summary>
+/// One path ack: the raw round trip of a frame next to its size, and the send window's state after it.
+/// Separates queuing on the path from the time a large frame takes to upload.
+/// </summary>
+public readonly record struct AckPerfSample(
+    long TimestampMs,
+    long Seq,
+    int Bytes,
+    double SampleMs,
+    double RttMs,
+    double BaseRttMs,
+    double WindowBytes,
+    /// <summary>Bytes in flight when the frame was sent, itself included.</summary>
+    long InFlightBytesAtSend);
+
+/// <summary>A quality level the relay's adaptive control asked for.</summary>
+public readonly record struct QualityPerfSample(long TimestampMs, int MaxWidth, int Quality);
+
+/// <summary>Receives per-frame timing, path acks and quality changes. Must be cheap: called on the capture and relay threads.</summary>
 public interface IFramePerfSink
 {
     void Record(in FramePerfSample sample);
+    void RecordAck(in AckPerfSample sample);
+    void RecordQuality(in QualityPerfSample sample);
 }
 
-/// <summary>Writes <see cref="FramePerfSample"/>s as CSV with invariant number formatting.</summary>
+/// <summary>Writes frame, ack and quality rows as one CSV table (a <c>kind</c> column tells them apart), with invariant number formatting.</summary>
 public sealed class CsvPerfLog : IFramePerfSink, IDisposable
 {
-    private const string Header = "t_ms,capture_id,key,regions,pixels,bytes,capture_ms,diff_ms,encode_ms,encode_mcycles,cpu";
+    // One schema for every row kind, so the file loads as a single table; columns a kind lacks stay empty.
+    private const string Header =
+        "kind,t_ms,capture_id,key,regions,pixels,bytes,capture_ms,diff_ms,encode_ms,encode_mcycles,cpu," +
+        "width,height,quality,max_width,seq,rtt_sample_ms,rtt_ms,base_rtt_ms,window_bytes,inflight_bytes";
     private readonly TextWriter _out;
     private readonly object _gate = new();
 
@@ -56,7 +84,22 @@ public sealed class CsvPerfLog : IFramePerfSink, IDisposable
         IFormatProvider inv = CultureInfo.InvariantCulture;
         string mcycles = s.EncodeCycles == 0 ? "" : (s.EncodeCycles / 1e6).ToString("F2", inv);
         string line = string.Create(inv,
-            $"{s.TimestampMs},{s.CaptureId},{(s.Key ? 1 : 0)},{s.Regions},{s.EncodedPixels},{s.Bytes},{s.CaptureMs:F2},{s.DiffMs:F2},{s.EncodeMs:F2},{mcycles},{s.ProcessorId}");
+            $"frame,{s.TimestampMs},{s.CaptureId},{(s.Key ? 1 : 0)},{s.Regions},{s.EncodedPixels},{s.Bytes},{s.CaptureMs:F2},{s.DiffMs:F2},{s.EncodeMs:F2},{mcycles},{s.ProcessorId}," +
+            $"{s.Width},{s.Height},{s.Quality},,,,,,,");
+        lock (_gate) _out.WriteLine(line);
+    }
+
+    public void RecordAck(in AckPerfSample s)
+    {
+        string line = string.Create(CultureInfo.InvariantCulture,
+            $"ack,{s.TimestampMs},,,,,{s.Bytes},,,,,,,,,,{s.Seq},{s.SampleMs:F1},{s.RttMs:F1},{s.BaseRttMs:F1},{s.WindowBytes:F0},{s.InFlightBytesAtSend}");
+        lock (_gate) _out.WriteLine(line);
+    }
+
+    public void RecordQuality(in QualityPerfSample s)
+    {
+        string line = string.Create(CultureInfo.InvariantCulture,
+            $"quality,{s.TimestampMs},,,,,,,,,,,,,{s.Quality},{s.MaxWidth},,,,,,");
         lock (_gate) _out.WriteLine(line);
     }
 

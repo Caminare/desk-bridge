@@ -15,11 +15,11 @@ public class SendWindowTests
     }
 
     [Fact]
-    public void Starts_open_with_256KB_window()
+    public void Starts_open_with_a_window_of_about_one_frame()
     {
         var w = new SendWindow();
         Assert.True(w.CanSend(0));
-        Assert.Equal(262144, w.WindowBytes);
+        Assert.Equal(16384, w.WindowBytes);
     }
 
     [Fact]
@@ -32,17 +32,17 @@ public class SendWindowTests
     }
 
     [Fact]
-    public void Closes_at_byte_budget_and_reopens_on_ack()
+    public void Sends_a_frame_only_if_it_fits_in_the_window_and_reopens_on_ack()
     {
         var w = new SendWindow();
-        w.OnSent(1, 200_000, 0);
-        Assert.True(w.CanSend(1));
-        w.OnSent(2, 100_000, 1);
-        Assert.False(w.CanSend(2));
+        w.OnSent(1, 10_000, 0);
+        Assert.True(w.CanSend(1, 6_000));
+        Assert.False(w.CanSend(1, 7_000));
+        w.OnSent(2, 6_000, 1);
         w.OnAck(1, false, 10);
         Assert.Equal(1, w.InFlightCount);
-        Assert.Equal(100_000, w.InFlightBytes);
-        Assert.True(w.CanSend(10));
+        Assert.Equal(6_000, w.InFlightBytes);
+        Assert.True(w.CanSend(10, 10_000));
     }
 
     [Fact]
@@ -64,16 +64,25 @@ public class SendWindowTests
     }
 
     [Fact]
-    public void Window_grows_by_at_least_16KB_or_10_percent_while_not_queuing()
+    public void Window_doubles_per_round_trip_while_in_use_and_not_queuing()
     {
         var w = new SendWindow();
         long seq = 0, t = 0;
-        t = RoundTrip(w, ref seq, t, 20);
-        Assert.Equal(262144 + 26214.4, w.WindowBytes, 1);
+        t = RoundTrip(w, ref seq, t, 20, bytes: 16384);
+        Assert.Equal(32768, w.WindowBytes);
         Assert.Equal(20, w.RttMs);
         Assert.Equal(20, w.BaselineRttMs);
-        for (int i = 0; i < 200; i++) t = RoundTrip(w, ref seq, t, 20);
-        Assert.Equal(8388608, w.WindowBytes); // capped at 8 MB
+        t = RoundTrip(w, ref seq, t, 20, bytes: 32768);
+        Assert.Equal(65536, w.WindowBytes);
+    }
+
+    [Fact]
+    public void Small_frames_on_a_quiet_screen_do_not_grow_the_window()
+    {
+        var w = new SendWindow();
+        long seq = 0, t = 0;
+        for (int i = 0; i < 100; i++) t = RoundTrip(w, ref seq, t, 20, bytes: 2_000);
+        Assert.Equal(16384, w.WindowBytes);
     }
 
     [Fact]
@@ -88,33 +97,30 @@ public class SendWindowTests
     }
 
     [Fact]
-    public void Queuing_beyond_250ms_cuts_by_30_percent_at_most_once_per_rtt()
+    public void Queuing_beyond_250ms_resizes_the_window_to_what_the_path_delivered()
     {
         var w = new SendWindow();
         long seq = 0, t = 1000;
-        t = RoundTrip(w, ref seq, t, 20); // baseline 20
-        // grow a bit first so the cut is visible against the floor
-        for (int i = 0; i < 30; i++) t = RoundTrip(w, ref seq, t, 20);
-        double before = w.WindowBytes;
-        // One big sample pulls the smoothed RTT above baseline + 250: 0.7*20 + 0.3*1500 = 464
-        t = RoundTrip(w, ref seq, t, 1500);
-        double afterCut = w.WindowBytes;
-        Assert.Equal(before * 0.7, afterCut, 3);
-        // Immediately again, within one RTT of the cut: no second cut.
-        seq++;
-        w.OnSent(seq, 1000, t);
-        w.OnAck(seq, false, t + 1);
-        Assert.Equal(afterCut, w.WindowBytes, 3);
+        // Probe up to 1 MB at a 20 ms baseline.
+        for (int bytes = 16384; bytes < 1_048_576; bytes *= 2) t = RoundTrip(w, ref seq, t, 20, bytes);
+        Assert.Equal(1_048_576, w.WindowBytes);
+        // A full window took 1.5 s: smoothed RTT 0.7*20 + 0.3*1500 = 464, queuing 444 ms. The path delivered
+        // 1 MB in 1.5 s, so a 20 ms baseline + 100 ms target holds 1048576 / 1500 * 120 = 83886 bytes.
+        t = RoundTrip(w, ref seq, t, 1500, bytes: 1_048_576);
+        Assert.Equal(83886.08, w.WindowBytes, 2);
+        // Another frame sent before the cut implies the same size: cuts do not compound.
+        t = RoundTrip(w, ref seq, t, 1500, bytes: 1_048_576);
+        Assert.Equal(83886.08, w.WindowBytes, 2);
     }
 
     [Fact]
-    public void Window_never_drops_below_128KB()
+    public void Window_never_drops_below_16KB()
     {
         var w = new SendWindow();
         long seq = 0, t = 1000;
         t = RoundTrip(w, ref seq, t, 10);
         for (int i = 0; i < 40; i++) t = RoundTrip(w, ref seq, t, 5000);
-        Assert.True(w.WindowBytes >= 131072);
+        Assert.Equal(16384, w.WindowBytes);
     }
 
     [Fact]
@@ -125,7 +131,7 @@ public class SendWindowTests
         w.OnAck(1, isRelay: true, 40);
         Assert.Equal(0, w.InFlightCount);
         Assert.Equal(0, w.RttMs);
-        Assert.Equal(262144, w.WindowBytes);
+        Assert.Equal(16384, w.WindowBytes);
     }
 
     [Fact]
@@ -134,6 +140,50 @@ public class SendWindowTests
         var w = new SendWindow();
         w.OnAck(7, false, 40);
         Assert.Equal(0, w.RttMs);
+    }
+
+    [Fact]
+    public void Path_ack_reports_the_raw_sample_and_the_acked_frames_size()
+    {
+        var w = new SendWindow();
+        w.OnSent(1, 5_000, 0);
+        w.OnSent(2, 300_000, 10);
+        RttSample? sample = w.OnAck(2, false, 410);
+        Assert.Equal(new RttSample(Seq: 2, Bytes: 300_000, SampleMs: 400, InFlightBytesAtSend: 305_000), sample);
+    }
+
+    [Fact]
+    public void A_small_frame_sent_behind_a_large_one_reports_the_bytes_queued_ahead_of_it()
+    {
+        var w = new SendWindow();
+        w.OnSent(1, 250_000, 0);
+        w.OnSent(2, 2_000, 5);
+        w.OnAck(1, false, 300);
+        RttSample? sample = w.OnAck(2, false, 310);
+        Assert.Equal(252_000, sample?.InFlightBytesAtSend);
+    }
+
+    [Fact]
+    public void Relay_ack_frees_only_the_skipped_frame_not_earlier_ones_still_on_the_way()
+    {
+        // The relay acks a frame it could not deliver (controller backed up); earlier frames are still queued
+        // towards the controller and will be acked by it.
+        var w = new SendWindow();
+        w.OnSent(1, 100_000, 0);
+        w.OnSent(2, 1_000, 5);
+        w.OnAck(2, isRelay: true, 10);
+        Assert.Equal(1, w.InFlightCount);
+        Assert.Equal(100_000, w.InFlightBytes);
+        Assert.NotNull(w.OnAck(1, false, 900));
+    }
+
+    [Fact]
+    public void Relay_ack_and_unknown_seq_report_no_sample()
+    {
+        var w = new SendWindow();
+        w.OnSent(1, 100, 0);
+        Assert.Null(w.OnAck(1, isRelay: true, 40));
+        Assert.Null(w.OnAck(7, false, 50));
     }
 
     [Fact]
@@ -152,20 +202,28 @@ public class SendWindowTests
     }
 
     [Fact]
-    public void Stall_escape_frees_the_window_after_1_5s_or_3_rtt()
+    public void Stall_escape_frees_the_window_after_5s_or_3_rtt_and_halves_it()
     {
         var w = new SendWindow();
-        w.OnSent(1, 300_000, 0);
-        Assert.False(w.CanSend(1400));
-        Assert.True(w.CanSend(1501));
-        Assert.Equal(0, w.InFlightCount);
-
-        long seq = 1, t = 2000;
-        t = RoundTrip(w, ref seq, t, 1000); // rtt ~1000: stall limit 3000
+        long seq = 0, t = 0;
+        for (int bytes = 16384; bytes < 131072; bytes *= 2) t = RoundTrip(w, ref seq, t, 20, bytes);
+        Assert.Equal(131072, w.WindowBytes);
         seq++;
         w.OnSent(seq, 300_000, t);
-        Assert.False(w.CanSend(t + 2900));
-        Assert.True(w.CanSend(t + 3100));
+        Assert.False(w.CanSend(t + 4900));
+        Assert.True(w.CanSend(t + 5001));
+        Assert.Equal(0, w.InFlightCount);
+        Assert.Equal(65536, w.WindowBytes);
+
+        // On a slow path (RTT around 3 s) the escape waits 3 x RTT instead.
+        t += 6000;
+        for (int i = 0; i < 20; i++) t = RoundTrip(w, ref seq, t, 3000, bytes: 1_000);
+        long limit = (long)(3 * w.RttMs);
+        Assert.InRange(limit, 8900, 9000);
+        seq++;
+        w.OnSent(seq, 300_000, t);
+        Assert.False(w.CanSend(t + limit - 50));
+        Assert.True(w.CanSend(t + limit + 50));
     }
 
     [Fact]
