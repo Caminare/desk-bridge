@@ -138,7 +138,7 @@ public sealed class StreamingEngine : IDisposable
                     _log(c.Count > 0 ? $"{c.Count} controller(s) connected, streaming." : "No controllers, capture paused.");
                     break;
                 case FrameAckEvent a:
-                    lock (_windowGate) _window.OnAck(a.Seq, a.IsRelayAck, Now);
+                    HandleAck(a);
                     _sendWake.Release();
                     break;
                 case KeyframeRequestEvent:
@@ -189,6 +189,18 @@ public sealed class StreamingEngine : IDisposable
         if (changed) RequestKeyframe();
     }
 
+    private void HandleAck(FrameAckEvent a)
+    {
+        long now = Now;
+        AckPerfSample? perf = null;
+        lock (_windowGate)
+        {
+            if (_window.OnAck(a.Seq, a.IsRelayAck, now) is { } s && _perf is not null)
+                perf = new AckPerfSample(now, s.Seq, s.Bytes, s.SampleMs, _window.RttMs, _window.BaselineRttMs, _window.WindowBytes, s.InFlightBytesAtSend);
+        }
+        if (perf is { } p) _perf!.Sink.RecordAck(p);
+    }
+
     private void RequestKeyframe()
     {
         _keys.RequestKeyframe();
@@ -205,6 +217,7 @@ public sealed class StreamingEngine : IDisposable
             int mw = payload.TryGetProperty("maxWidth", out JsonElement m) && m.TryGetInt32(out int mwv) ? mwv : s.MaxWidth;
             int q = payload.TryGetProperty("jpegQuality", out JsonElement j) && j.TryGetInt32(out int qv) ? qv : s.JpegQuality;
             _settings = s with { MaxWidth = Math.Clamp(mw, StreamSizer.MinWidth, 3840), JpegQuality = Math.Clamp(q, 30, 95) };
+            _perf?.Sink.RecordQuality(new QualityPerfSample(Now, _settings.MaxWidth, _settings.JpegQuality));
             return;
         }
         _onInput(payload);
@@ -307,7 +320,7 @@ public sealed class StreamingEngine : IDisposable
 
     // ---- Capture thread ----
 
-    private void RecordPerf(EncodedFrame frame, IReadOnlyList<PixelRect> regions, in FrameImage image, ulong cycles0)
+    private void RecordPerf(EncodedFrame frame, IReadOnlyList<PixelRect> regions, in FrameImage image, int quality, ulong cycles0)
     {
         ulong cycles1 = _perf!.ThreadCycles();
         long pixels = 0;
@@ -317,7 +330,8 @@ public sealed class StreamingEngine : IDisposable
             Now, frame.CaptureId, frame.Key, frame.TileCount, pixels, frame.PayloadBytes,
             frame.CaptureMs, frame.DiffMs, frame.EncodeMs,
             cycles0 == 0 || cycles1 < cycles0 ? 0 : cycles1 - cycles0,
-            Thread.GetCurrentProcessorId()));
+            Thread.GetCurrentProcessorId(),
+            image.Width, image.Height, quality));
     }
 
     private void CaptureLoop()
@@ -429,7 +443,7 @@ public sealed class StreamingEngine : IDisposable
         frame.Generation = diff.Generation;
         frame.Snapshot = diff.Snapshot;
         frame.CaptureId = captureId;
-        if (_perf is not null) RecordPerf(frame, regions, res.Image, cycles0);
+        if (_perf is not null) RecordPerf(frame, regions, res.Image, settings.JpegQuality, cycles0);
 
         if (!_mailbox.Post(frame, Now, out EncodedFrame? replaced))
         {

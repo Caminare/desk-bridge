@@ -1,6 +1,12 @@
 namespace DeskBridge.Agent.Core.Streaming;
 
 /// <summary>
+/// One send-to-ack round trip, the size of the frame it measured, and the bytes in flight when it was sent
+/// (itself included): a small frame queued behind a large one waits for that one too.
+/// </summary>
+public readonly record struct RttSample(long Seq, int Bytes, double SampleMs, long InFlightBytesAtSend);
+
+/// <summary>
 /// Delay-based send pacing, ported from the PowerShell agent's send loop. The window (in bytes) grows while
 /// frames are not queuing anywhere on the path and shrinks when they are; acks are cumulative. Pure logic:
 /// the caller passes the current time in milliseconds from any monotonic clock. Not thread safe.
@@ -15,7 +21,7 @@ public sealed class SendWindow
     public const long BaselineWindowMs = 15000;
     public const long MinStallMs = 1500;
 
-    private readonly record struct Sent(long Seq, long At, int Bytes);
+    private readonly record struct Sent(long Seq, long At, int Bytes, long InFlightBytesAtSend);
 
     private readonly Queue<Sent> _inFlight = new();
     private long _inFlightBytes;
@@ -57,27 +63,30 @@ public sealed class SendWindow
 
     public void OnSent(long seq, int bytes, long nowMs)
     {
-        _inFlight.Enqueue(new Sent(seq, nowMs, bytes));
         _inFlightBytes += bytes;
+        _inFlight.Enqueue(new Sent(seq, nowMs, bytes, _inFlightBytes));
     }
 
     /// <summary>
     /// Cumulative ack: frees every frame up to <paramref name="seq"/>. An ack from the path (not
     /// <paramref name="isRelay"/>) for a frame still in flight is an RTT sample and drives the window.
     /// Relay acks (the frame reached no controller) free the window but say nothing about the path.
+    /// Returns that sample with the acked frame's size, or null when the ack was not one.
     /// </summary>
-    public void OnAck(long seq, bool isRelay, long nowMs)
+    public RttSample? OnAck(long seq, bool isRelay, long nowMs)
     {
-        bool found = false;
-        long sentAt = 0;
+        Sent? acked = null;
         while (_inFlight.Count > 0 && _inFlight.Peek().Seq <= seq)
         {
             Sent s = _inFlight.Dequeue();
             _inFlightBytes -= s.Bytes;
-            if (s.Seq == seq) { found = true; sentAt = s.At; }
+            if (s.Seq == seq) acked = s;
         }
         if (_inFlightBytes < 0) _inFlightBytes = 0;
-        if (found && !isRelay) Sample(nowMs - sentAt, nowMs);
+        if (acked is not { } a || isRelay) return null;
+        double sample = nowMs - a.At;
+        Sample(sample, nowMs);
+        return new RttSample(a.Seq, a.Bytes, sample, a.InFlightBytesAtSend);
     }
 
     /// <summary>Forgets everything in flight (controller count changed, or acks stopped). Window size and RTT are kept.</summary>

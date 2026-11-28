@@ -137,6 +137,36 @@ public class SendWindowTests
     }
 
     [Fact]
+    public void Path_ack_reports_the_raw_sample_and_the_acked_frames_size()
+    {
+        var w = new SendWindow();
+        w.OnSent(1, 5_000, 0);
+        w.OnSent(2, 300_000, 10);
+        RttSample? sample = w.OnAck(2, false, 410);
+        Assert.Equal(new RttSample(Seq: 2, Bytes: 300_000, SampleMs: 400, InFlightBytesAtSend: 305_000), sample);
+    }
+
+    [Fact]
+    public void A_small_frame_sent_behind_a_large_one_reports_the_bytes_queued_ahead_of_it()
+    {
+        var w = new SendWindow();
+        w.OnSent(1, 250_000, 0);
+        w.OnSent(2, 2_000, 5);
+        w.OnAck(1, false, 300);
+        RttSample? sample = w.OnAck(2, false, 310);
+        Assert.Equal(252_000, sample?.InFlightBytesAtSend);
+    }
+
+    [Fact]
+    public void Relay_ack_and_unknown_seq_report_no_sample()
+    {
+        var w = new SendWindow();
+        w.OnSent(1, 100, 0);
+        Assert.Null(w.OnAck(1, isRelay: true, 40));
+        Assert.Null(w.OnAck(7, false, 50));
+    }
+
+    [Fact]
     public void Baseline_follows_a_path_that_got_slower_after_15s()
     {
         var w = new SendWindow();
