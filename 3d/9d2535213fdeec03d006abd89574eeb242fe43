@@ -1,0 +1,34 @@
+agent/windows/src/DeskBridge.Agent.Core/Streaming/StreamingEngine.cs
+  f9cd7763da9e98c5 243,246
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/SendWindowSchedulerTests.cs
+  f9cd7763da9e98c5 79,81-82,166-179,205,208-214,216,218-222,225-226
+  f9cd7763da9e98c5 76-78
+  f9cd7763da9e98c5 80
+  f9cd7763da9e98c5 83-85
+agent/windows/src/DeskBridge.Agent.Core/Streaming/FrameMailbox.cs
+  f9cd7763da9e98c5 23-25
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/SendWindowPathTests.cs
+  f9cd7763da9e98c5 1-274
+agent/windows/tests/DeskBridge.Agent.Core.Tests/Streaming/PipelineTests.cs
+  f9cd7763da9e98c5 148-159
+  f9cd7763da9e98c5 147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3d9d2535213fdeec03d006abd89574eeb242fe43",
+  "prompts": {
+    "f9cd7763da9e98c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8134b2cc-c7cc-4a12-933f-0066921a9814",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Gabriel Vitor <c-gvitor@neogov.net>",
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 271,
+      "overriden_lines": 0
+    }
+  }
+}
